@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
-    "build": "echo 'No build step required'",
+    "build": "node build.js",
     "deploy": "wrangler deploy",
     "db:create": "wrangler d1 create url-shortener-db",
     "db:migrate:local": "wrangler d1 migrations apply url-shortener-db --local",
