@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Shortly — URL Shortener</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    :root { color-scheme: dark; --bg:#0f172a; --card:#1e293b; --line:#334155; --text:#e2e8f0; --muted:#94a3b8; --accent:#38bdf8; --danger:#fb7185; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:var(--bg); color:var(--text); }
+    .wrap { max-width:1100px; margin:0 auto; padding:24px 16px 48px; }
+    h1 { margin:0 0 4px; font-size:2rem; }
+    .sub { color:var(--muted); margin:0 0 24px; }
+    .grid { display:grid; gap:16px; }
+    @media (min-width:900px){ .grid-2 { grid-template-columns: 1.2fr .8fr; } }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px; }
+    label { display:grid; gap:6px; font-size:.9rem; color:var(--muted); margin-bottom:10px; }
+    input, select, button { font:inherit; }
+    input, select { width:100%; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:#0b1220; color:var(--text); }
+    button { border:1px solid var(--line); background:#0b1220; color:var(--text); border-radius:10px; padding:8px 12px; cursor:pointer; }
+    button.primary { background:var(--accent); color:#082f49; border:none; font-weight:700; }
+    button.danger { color:var(--danger); border-color:rgba(251,113,133,.4); }
+    .stats { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:16px; }
+    .stat { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:12px; }
+    .stat b { display:block; font-size:1.4rem; margin-top:4px; }
+    .stat span { color:var(--muted); font-size:.75rem; text-transform:uppercase; letter-spacing:.04em; }
+    table { width:100%; border-collapse:collapse; font-size:.9rem; }
+    th, td { text-align:left; padding:10px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+    th { color:var(--muted); font-size:.75rem; text-transform:uppercase; letter-spacing:.04em; }
+    .actions { display:flex; flex-wrap:wrap; gap:6px; }
+    .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:space-between; margin-bottom:12px; }
+    .muted { color:var(--muted); font-size:.85rem; }
+    a { color:var(--accent); }
+    .toast { position:fixed; right:16px; bottom:16px; background:#10b981; color:#052e1c; padding:10px 14px; border-radius:10px; font-weight:600; display:none; }
+    .toast.err { background:#f43f5e; color:#fff; }
+    dialog { border:1px solid var(--line); border-radius:16px; background:var(--card); color:var(--text); padding:0; max-width:720px; width:calc(100% - 24px); }
+    dialog::backdrop { background:rgba(0,0,0,.65); }
+    .dlg { padding:16px; }
+    .dlg h3 { margin:0 0 12px; }
+    .chart-box { height:220px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Shortly</h1>
+    <p class="sub">Privacy-friendly URL shortener with analytics, QR codes, and a public API.</p>
+
+    <div class="stats">
+      <div class="stat"><span>Total links</span><b id="statLinks">—</b></div>
+      <div class="stat"><span>Total clicks</span><b id="statClicks">—</b></div>
+      <div class="stat"><span>7-day clicks</span><b id="statWeek">—</b></div>
+    </div>
+
+    <div class="grid grid-2">
+      <section class="card">
+        <h2>Create short link</h2>
+        <form id="createForm">
+          <label>Destination URL *<input id="url" type="url" required placeholder="https://example.com/long/path" /></label>
+          <label>Custom slug<input id="slug" placeholder="optional" /></label>
+          <label>Title<input id="title" placeholder="optional" /></label>
+          <label>Redirect
+            <select id="redirectType">
+              <option value="302">302 Temporary</option>
+              <option value="301">301 Permanent</option>
+            </select>
+          </label>
+          <button class="primary" type="submit">Shorten URL</button>
+        </form>
+      </section>
+      <section class="card">
+        <div class="row"><h2 style="margin:0">Clicks · 7 days</h2><a href="/api/export">Export CSV</a></div>
+        <div class="chart-box"><canvas id="overviewChart"></canvas></div>
+      </section>
+    </div>
+
+    <section class="card" style="margin-top:16px">
+      <div class="row">
+        <div>
+          <h2 style="margin:0">All links</h2>
+          <div class="muted" id="rangeLabel">0 links</div>
+        </div>
+        <form id="searchForm" class="row" style="margin:0">
+          <input id="search" placeholder="Search slug or URL…" style="min-width:220px" />
+          <button type="submit">Search</button>
+        </form>
+      </div>
+      <div style="overflow:auto">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th><th>Slug</th><th>URL</th><th>Clicks</th><th>Created</th><th>Last click</th><th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="tbody"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+        </table>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button id="prevBtn" type="button">Previous</button>
+        <span class="muted" id="pageLabel">Page 1</span>
+        <button id="nextBtn" type="button">Next</button>
+      </div>
+    </section>
+  </div>
+
+  <dialog id="editDlg"><div class="dlg">
+    <h3>Edit link</h3>
+    <form id="editForm">
+      <input type="hidden" id="editId" />
+      <label>URL<input id="editUrl" type="url" required /></label>
+      <label>Slug<input id="editSlug" required /></label>
+      <label>Title<input id="editTitle" /></label>
+      <label>Redirect
+        <select id="editRedirect">
+          <option value="302">302</option>
+          <option value="301">301</option>
+        </select>
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;color:var(--text)"><input id="editActive" type="checkbox" /> Active</label>
+      <div class="row" style="justify-content:flex-end">
+        <button type="button" id="editCancel">Cancel</button>
+        <button class="primary" type="submit">Save</button>
+      </div>
+    </form>
+  </div></dialog>
+
+  <dialog id="statsDlg"><div class="dlg">
+    <div class="row"><h3 id="statsTitle" style="margin:0">Analytics</h3><button type="button" id="statsClose">Close</button></div>
+    <div class="chart-box"><canvas id="detailChart"></canvas></div>
+    <div class="grid" style="margin-top:12px">
+      <div>
+        <h4>By country</h4>
+        <div id="byCountry" class="muted">—</div>
+      </div>
+      <div>
+        <h4>Recent</h4>
+        <div id="recent" class="muted">—</div>
+      </div>
+    </div>
+  </div></dialog>
+
+  <dialog id="qrDlg"><div class="dlg" style="text-align:center">
+    <div class="row"><h3 id="qrTitle" style="margin:0">QR</h3><button type="button" id="qrClose">Close</button></div>
+    <img id="qrImg" alt="QR code" width="300" height="300" style="background:#fff;border-radius:12px;padding:12px;margin:12px auto;display:block" />
+  </div></dialog>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const state = { page: 1, search: '', overviewChart: null, detailChart: null };
+
+    function toast(msg, err=false) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.className = 'toast' + (err ? ' err' : '');
+      el.style.display = 'block';
+      setTimeout(() => el.style.display = 'none', 2500);
+    }
+
+    async function api(path, opts) {
+      const res = await fetch(path, opts);
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json.success === false) throw new Error(json.error || res.statusText);
+      return json;
+    }
+
+    function fmt(d) { return d ? new Date(d).toLocaleString() : '—'; }
+    function trunc(s, n=48) { return !s ? '' : (s.length > n ? s.slice(0,n-1)+'…' : s); }
+
+    async function loadStats() {
+      const s = await api('/api/stats');
+      document.getElementById('statLinks').textContent = s.total_links;
+      document.getElementById('statClicks').textContent = s.total_clicks;
+      document.getElementById('statWeek').textContent = (s.clicks_last_7_days||[]).reduce((a,b)=>a+b,0);
+      const ctx = document.getElementById('overviewChart');
+      if (state.overviewChart) state.overviewChart.destroy();
+      state.overviewChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: (s.dates_last_7_days||[]).map(d => d.slice(5)),
+          datasets: [{ label: 'Clicks', data: s.clicks_last_7_days||[], borderColor:'#38bdf8', backgroundColor:'rgba(56,189,248,.15)', fill:true, tension:.35 }]
+        },
+        options: { responsive:true, maintainAspectRatio:false, plugins:{ legend:{ display:false } }, scales:{ x:{ ticks:{ color:'#94a3b8' } }, y:{ beginAtZero:true, ticks:{ color:'#94a3b8', precision:0 } } } }
+      });
+    }
+
+    async function loadLinks(page=1) {
+      state.page = page;
+      const q = new URLSearchParams({ page:String(page), limit:'10' });
+      if (state.search) q.set('search', state.search);
+      const json = await api('/api/links?' + q.toString());
+      const tbody = document.getElementById('tbody');
+      if (!json.data.length) {
+        tbody.innerHTML = '<tr><td colspan="7" class="muted">No links yet.</td></tr>';
+      } else {
+        tbody.innerHTML = json.data.map(row => `
+          <tr>
+            <td>${row.id}</td>
+            <td><strong>/${row.slug}</strong>${row.title ? `<div class="muted">${trunc(row.title,40)}</div>` : ''}</td>
+            <td><a href="${row.url}" target="_blank" rel="noreferrer">${trunc(row.url,56)}</a></td>
+            <td>${row.clicks}</td>
+            <td class="muted">${fmt(row.created_at)}</td>
+            <td class="muted">${fmt(row.last_clicked)}</td>
+            <td class="actions">
+              <button data-copy="${row.short_url}">Copy</button>
+              <button data-stats="${row.slug}">Stats</button>
+              <button data-qr="${row.slug}">QR</button>
+              <button data-edit='${JSON.stringify(row).replace(/'/g, "&#39;")}'>Edit</button>
+              <button class="danger" data-del="${row.id}" data-slug="${row.slug}">Delete</button>
+            </td>
+          </tr>`).join('');
+      }
+      const p = json.pagination;
+      document.getElementById('rangeLabel').textContent = p.total ? `${(p.page-1)*p.limit+1}–${Math.min(p.page*p.limit,p.total)} of ${p.total}` : '0 links';
+      document.getElementById('pageLabel').textContent = `Page ${p.page} / ${p.totalPages}`;
+      document.getElementById('prevBtn').disabled = p.page <= 1;
+      document.getElementById('nextBtn').disabled = p.page >= p.totalPages;
+      state.totalPages = p.totalPages;
+    }
+
+    document.getElementById('createForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        const body = {
+          url: document.getElementById('url').value,
+          slug: document.getElementById('slug').value || undefined,
+          title: document.getElementById('title').value || undefined,
+          redirect_type: Number(document.getElementById('redirectType').value)
+        };
+        const json = await api('/api/links', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        toast('Created /' + json.data.slug);
+        e.target.reset();
+        await Promise.all([loadLinks(1), loadStats()]);
+      } catch (err) { toast(err.message, true); }
+    });
+
+    document.getElementById('searchForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      state.search = document.getElementById('search').value.trim();
+      await loadLinks(1);
+    });
+    document.getElementById('prevBtn').onclick = () => loadLinks(state.page - 1);
+    document.getElementById('nextBtn').onclick = () => loadLinks(state.page + 1);
+
+    document.getElementById('tbody').addEventListener('click', async (e) => {
+      const t = e.target;
+      if (!(t instanceof HTMLElement)) return;
+      if (t.dataset.copy) {
+        await navigator.clipboard.writeText(t.dataset.copy);
+        toast('Copied');
+      } else if (t.dataset.del) {
+        if (!confirm('Delete /' + t.dataset.slug + '?')) return;
+        try {
+          await api('/api/links/' + t.dataset.del, { method:'DELETE' });
+          toast('Deleted');
+          await Promise.all([loadLinks(state.page), loadStats()]);
+        } catch (err) { toast(err.message, true); }
+      } else if (t.dataset.stats) {
+        try {
+          const s = await api('/api/stats/' + encodeURIComponent(t.dataset.stats));
+          document.getElementById('statsTitle').textContent = 'Analytics · /' + s.slug;
+          if (state.detailChart) state.detailChart.destroy();
+          state.detailChart = new Chart(document.getElementById('detailChart'), {
+            type:'bar',
+            data:{ labels:(s.clicks_by_date||[]).map(d=>d.date.slice(5)), datasets:[{ data:(s.clicks_by_date||[]).map(d=>d.clicks), backgroundColor:'rgba(14,165,233,.65)', borderRadius:6 }] },
+            options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{ display:false } }, scales:{ y:{ beginAtZero:true } } }
+          });
+          document.getElementById('byCountry').innerHTML = (s.clicks_by_country||[]).map(c => `<div>${c.country}: <b>${c.count}</b></div>`).join('') || 'No data';
+          document.getElementById('recent').innerHTML = (s.recent_clicks||[]).slice(0,8).map(c => `<div>${fmt(c.timestamp)} · ${c.country||'??'}</div>`).join('') || 'No data';
+          document.getElementById('statsDlg').showModal();
+        } catch (err) { toast(err.message, true); }
+      } else if (t.dataset.qr) {
+        try {
+          const q = await api('/api/qr/' + encodeURIComponent(t.dataset.qr));
+          document.getElementById('qrTitle').textContent = 'QR · /' + q.slug;
+          document.getElementById('qrImg').src = q.qr_url;
+          document.getElementById('qrDlg').showModal();
+        } catch (err) { toast(err.message, true); }
+      } else if (t.dataset.edit) {
+        const row = JSON.parse(t.dataset.edit);
+        document.getElementById('editId').value = row.id;
+        document.getElementById('editUrl').value = row.url;
+        document.getElementById('editSlug').value = row.slug;
+        document.getElementById('editTitle').value = row.title || '';
+        document.getElementById('editRedirect').value = String(row.redirect_type || 302);
+        document.getElementById('editActive').checked = !!row.is_active;
+        document.getElementById('editDlg').showModal();
+      }
+    });
+
+    document.getElementById('editCancel').onclick = () => document.getElementById('editDlg').close();
+    document.getElementById('statsClose').onclick = () => document.getElementById('statsDlg').close();
+    document.getElementById('qrClose').onclick = () => document.getElementById('qrDlg').close();
+
+    document.getElementById('editForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        const id = document.getElementById('editId').value;
+        await api('/api/links/' + id, {
+          method:'PUT',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({
+            url: document.getElementById('editUrl').value,
+            slug: document.getElementById('editSlug').value,
+            title: document.getElementById('editTitle').value,
+            redirect_type: Number(document.getElementById('editRedirect').value),
+            is_active: document.getElementById('editActive').checked
+          })
+        });
+        document.getElementById('editDlg').close();
+        toast('Updated');
+        await loadLinks(state.page);
+      } catch (err) { toast(err.message, true); }
+    });
+
+    Promise.all([loadLinks(1), loadStats()]).catch(err => toast(err.message, true));
+  </script>
+</body>
+</html>
