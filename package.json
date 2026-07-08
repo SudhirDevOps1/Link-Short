@@ -1,32 +1,39 @@
 {
-  "name": "nextjs-postgresql-template",
+  "name": "shortly-worker",
+  "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:create": "wrangler d1 create url-shortener-db",
+    "db:migrate:local": "wrangler d1 migrations apply url-shortener-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply url-shortener-db --remote",
+    "tail": "wrangler tail"
   },
   "dependencies": {
-    "dotenv": "17.3.1",
-    "drizzle-orm": "0.45.2",
-    "next": "16.2.6",
-    "pg": "8.20.0",
-    "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "hono": "^4.7.2"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "4.1.17",
-    "@types/node": "22.19.15",
-    "@types/pg": "8.18.0",
-    "@types/react": "19.2.14",
-    "@types/react-dom": "19.2.3",
-    "drizzle-kit": "0.31.10",
-    "eslint": "9.39.4",
-    "eslint-config-next": "16.2.6",
-    "postcss": "8.5.8",
-    "tailwindcss": "4.1.17",
-    "typescript": "5.9.3"
+    "@cloudflare/workers-types": "^4.20250408.0",
+    "wrangler": "^4.108.0"
+  },
+  "description": "Privacy-first, self-hosted URL shortener with click analytics, QR codes, and an owner-only admin dashboard for Cloudflare Workers and D1.",
+  "cloudflare": {
+    "env-variables": [
+      "APP_URL",
+      "DEFAULT_REDIRECT",
+      "REQUIRE_API_KEY"
+    ],
+    "secrets": [
+      "API_KEY"
+    ],
+    "bindings": {
+      "API_KEY": {
+        "description": "Optional. Protects the admin-facing /api/links, /api/stats, and /api/export endpoints. Use `openssl rand -hex 32` to generate one. Leave unset for open/dev mode; the public /:slug redirect and QR endpoints are never gated by this key."
+      },
+      "DB": {
+        "description": "Required. D1 database binding created via `wrangler d1 create url-shortener-db`. Stores links, clicks, and settings — see migrations/0001_initial.sql."
+      }
+    }
   }
 }
