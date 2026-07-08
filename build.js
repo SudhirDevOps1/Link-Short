@@ -29,20 +29,16 @@ try {
   // 2. If it doesn't exist, create it
   if (!dbUuid) {
     console.log(`Database '${DB_NAME}' not found. Creating a new one...`);
-    const createOutput = execSync(`npx wrangler d1 create ${DB_NAME} --json`, { encoding: 'utf-8' });
-    const jsonStart = createOutput.indexOf('{');
-    if (jsonStart !== -1) {
-      const cleanJson = createOutput.substring(jsonStart);
-      const result = JSON.parse(cleanJson);
-      dbUuid = result.database_id || result.uuid;
-      console.log(`Created new D1 database with ID: ${dbUuid}`);
+    const createOutput = execSync(`npx wrangler d1 create ${DB_NAME}`, { encoding: 'utf-8' });
+    
+    // Extract UUID format (8-4-4-4-12 hex chars) from wrangler output
+    const uuidRegex = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+    const match = createOutput.match(uuidRegex);
+    if (match) {
+      dbUuid = match[0];
+      console.log(`Successfully created database. Extracted ID: ${dbUuid}`);
     } else {
-      // Regex fallback if not clean JSON
-      const match = createOutput.match(/database_id\s*=\s*"([^"]+)"/) || createOutput.match(/"database_id":\s*"([^"]+)"/);
-      if (match) {
-        dbUuid = match[1];
-        console.log(`Extracted database ID: ${dbUuid}`);
-      }
+      throw new Error(`Failed to parse database ID from wrangler output: ${createOutput}`);
     }
   }
 
