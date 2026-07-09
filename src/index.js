@@ -202,7 +202,7 @@ async function writeAuditLog(db, actorType, actorId, action, targetType, targetI
 async function checkIpBlocklist(c, next) {
   const ip = clientIp(c);
   const ipHash = await hashIp(ip);
-  const blocked = await c.env.DB.prepare("SELECT 1 FROM blocked_ips WHERE ip_hash = ? LIMIT 1").get(ipHash);
+  const blocked = await c.env.DB.prepare("SELECT 1 FROM blocked_ips WHERE ip_hash = ? LIMIT 1").bind(ipHash).first();
   if (blocked) {
     return c.text("Forbidden: Your IP is blocked.", 403);
   }
@@ -222,7 +222,7 @@ async function requireAdmin(c, next) {
   // Verify against database
   const user = await c.env.DB.prepare(
     "SELECT * FROM users WHERE username = ? LIMIT 1"
-  ).bind(userSession.username).get();
+  ).bind(userSession.username).first();
   
   if (!user || user.token_version !== userSession.tokenVersion) {
     return jsonError(c, "Unauthorized: Session invalidated", 401);
@@ -234,7 +234,7 @@ async function requireAdmin(c, next) {
 
 // Bootstrap default user on first request
 async function ensureAdminUser(db) {
-  const user = await db.prepare("SELECT 1 FROM users LIMIT 1").get();
+  const user = await db.prepare("SELECT 1 FROM users LIMIT 1").first();
   if (!user) {
     const hash = await hashPassword("admin");
     await db.prepare(
@@ -286,7 +286,7 @@ app.post("/api/auth/login", async (c) => {
   
   const user = await c.env.DB.prepare(
     "SELECT * FROM users WHERE username = ? LIMIT 1"
-  ).bind(body.username).get();
+  ).bind(body.username).first();
   
   if (!user) {
     await writeAuditLog(c.env.DB, "public", null, "login_failed", "user", body.username, { reason: "User not found" }, ipHash);
@@ -416,7 +416,7 @@ app.post("/api/shorten", async (c) => {
       return jsonError(c, "Custom slug must be alphanumeric (2-64 chars)");
     }
     // Check if slug exists
-    const exists = await c.env.DB.prepare("SELECT 1 FROM links WHERE slug = ? LIMIT 1").bind(slug).get();
+    const exists = await c.env.DB.prepare("SELECT 1 FROM links WHERE slug = ? LIMIT 1").bind(slug).first();
     if (exists) return jsonError(c, "Custom slug is already taken");
   } else {
     // Generate random 6 char slug
@@ -425,7 +425,7 @@ app.post("/api/shorten", async (c) => {
     while (attempts < 5) {
       const bytes = crypto.getRandomValues(new Uint8Array(6));
       slug = [...bytes].map(b => alphabet[b % alphabet.length]).join("");
-      const exists = await c.env.DB.prepare("SELECT 1 FROM links WHERE slug = ? LIMIT 1").bind(slug).get();
+      const exists = await c.env.DB.prepare("SELECT 1 FROM links WHERE slug = ? LIMIT 1").bind(slug).first();
       if (!exists) break;
       attempts++;
     }
@@ -459,7 +459,7 @@ app.get("/api/links", requireAdmin, async (c) => {
   
   const total = await c.env.DB.prepare(
     "SELECT COUNT(*) as count FROM links WHERE (slug LIKE ? OR url LIKE ? OR title LIKE ?) AND is_active = 1"
-  ).bind(search, search, search).get();
+  ).bind(search, search, search).first();
   
   const rows = await c.env.DB.prepare(
     "SELECT * FROM links WHERE (slug LIKE ? OR url LIKE ? OR title LIKE ?) AND is_active = 1 ORDER BY created_at DESC LIMIT ? OFFSET ?"
@@ -498,7 +498,7 @@ app.post("/api/links", requireAdmin, async (c) => {
     if (!/^[a-zA-Z0-9_-]{2,64}$/.test(slug)) {
       return jsonError(c, "Slug must be alphanumeric (2-64 chars)");
     }
-    const exists = await c.env.DB.prepare("SELECT 1 FROM links WHERE slug = ? LIMIT 1").bind(slug).get();
+    const exists = await c.env.DB.prepare("SELECT 1 FROM links WHERE slug = ? LIMIT 1").bind(slug).first();
     if (exists) return jsonError(c, "Slug is already taken");
   } else {
     const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -534,7 +534,7 @@ app.put("/api/links/:id", requireAdmin, async (c) => {
   const body = await c.req.json().catch(() => null);
   const ipHash = await hashIp(clientIp(c));
   
-  const link = await c.env.DB.prepare("SELECT * FROM links WHERE id = ? LIMIT 1").bind(id).get();
+  const link = await c.env.DB.prepare("SELECT * FROM links WHERE id = ? LIMIT 1").bind(id).first();
   if (!link) return jsonError(c, "Link not found", 404);
   
   if (!body?.url || !/^https?:\/\//i.test(body.url)) {
@@ -568,7 +568,7 @@ app.delete("/api/links/:id", requireAdmin, async (c) => {
   const id = c.req.param("id");
   const ipHash = await hashIp(clientIp(c));
   
-  const link = await c.env.DB.prepare("SELECT * FROM links WHERE id = ? LIMIT 1").bind(id).get();
+  const link = await c.env.DB.prepare("SELECT * FROM links WHERE id = ? LIMIT 1").bind(id).first();
   if (!link) return jsonError(c, "Link not found", 404);
   
   await c.env.DB.prepare("UPDATE links SET is_active = 0 WHERE id = ?").bind(id).run();
@@ -579,8 +579,8 @@ app.delete("/api/links/:id", requireAdmin, async (c) => {
 
 // ADMIN: GET /api/stats (Overall dashboard stats)
 app.get("/api/stats", requireAdmin, async (c) => {
-  const totalLinks = await c.env.DB.prepare("SELECT COUNT(*) as count FROM links WHERE is_active = 1").get();
-  const totalClicks = await c.env.DB.prepare("SELECT COUNT(*) as count FROM clicks").get();
+  const totalLinks = await c.env.DB.prepare("SELECT COUNT(*) as count FROM links WHERE is_active = 1").first();
+  const totalClicks = await c.env.DB.prepare("SELECT COUNT(*) as count FROM clicks").first();
   
   // Clicks last 7 days chart array
   const last7Days = [];
@@ -590,7 +590,7 @@ app.get("/api/stats", requireAdmin, async (c) => {
     const dateStr = d.toISOString().split("T")[0];
     const clickCount = await c.env.DB.prepare(
       "SELECT COUNT(*) as count FROM clicks WHERE timestamp LIKE ?"
-    ).bind(`${dateStr}%`).get();
+    ).bind(`${dateStr}%`).first();
     last7Days.push({ date: dateStr, clicks: clickCount.count });
   }
   
@@ -611,7 +611,7 @@ app.get("/api/stats", requireAdmin, async (c) => {
 app.get("/api/stats/:slug", requireAdmin, async (c) => {
   const slug = c.req.param("slug");
   
-  const link = await c.env.DB.prepare("SELECT * FROM links WHERE slug = ? AND is_active = 1 LIMIT 1").bind(slug).get();
+  const link = await c.env.DB.prepare("SELECT * FROM links WHERE slug = ? AND is_active = 1 LIMIT 1").bind(slug).first();
   if (!link) return jsonError(c, "Link not found", 404);
   
   const clicksByCountry = await c.env.DB.prepare(
@@ -659,7 +659,7 @@ app.delete("/api/admin/blocked-ips/:id", requireAdmin, async (c) => {
   const id = c.req.param("id");
   const ipHash = await hashIp(clientIp(c));
   
-  const block = await c.env.DB.prepare("SELECT * FROM blocked_ips WHERE id = ? LIMIT 1").bind(id).get();
+  const block = await c.env.DB.prepare("SELECT * FROM blocked_ips WHERE id = ? LIMIT 1").bind(id).first();
   
   await c.env.DB.prepare("DELETE FROM blocked_ips WHERE id = ?").bind(id).run();
   if (block) {
@@ -677,7 +677,7 @@ app.get("/api/admin/audit-log", requireAdmin, async (c) => {
 // PUBLIC: GET /api/qr/:slug -> API endpoint redirect to qrserver
 app.get("/api/qr/:slug", async (c) => {
   const slug = c.req.param("slug");
-  const link = await c.env.DB.prepare("SELECT 1 FROM links WHERE slug = ? AND is_active = 1 LIMIT 1").bind(slug).get();
+  const link = await c.env.DB.prepare("SELECT 1 FROM links WHERE slug = ? AND is_active = 1 LIMIT 1").bind(slug).first();
   if (!link) return jsonError(c, "Slug not found", 404);
   
   const origin = (c.env.APP_URL || new URL(c.req.url).origin).replace(/\/$/, "");
@@ -694,7 +694,7 @@ app.get("/:slug", async (c) => {
   const reserved = ["api", "health", "favicon.ico"];
   if (reserved.includes(slug)) return c.notFound();
   
-  const link = await c.env.DB.prepare("SELECT * FROM links WHERE slug = ? AND is_active = 1 LIMIT 1").bind(slug).get();
+  const link = await c.env.DB.prepare("SELECT * FROM links WHERE slug = ? AND is_active = 1 LIMIT 1").bind(slug).first();
   if (!link) return c.notFound();
   
   // Expiration date validation
