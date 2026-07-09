@@ -654,7 +654,7 @@ app.delete("/api/admin/blocked-ips/:id", requireAdmin, async (c) => {
   const id = c.req.param("id");
   const ipHash = await hashIp(clientIp(c));
   
-  const block = await c.env.DB.prepare("SELECT * blocked_ips WHERE id = ? LIMIT 1").bind(id).get();
+  const block = await c.env.DB.prepare("SELECT * FROM blocked_ips WHERE id = ? LIMIT 1").bind(id).get();
   
   await c.env.DB.prepare("DELETE FROM blocked_ips WHERE id = ?").bind(id).run();
   if (block) {
