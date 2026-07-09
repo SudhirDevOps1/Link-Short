@@ -235,8 +235,10 @@ async function requireAdmin(c, next) {
 // Bootstrap default user on first request
 async function ensureAdminUser(db) {
   const user = await db.prepare("SELECT 1 FROM users LIMIT 1").first();
+  console.log("ensureAdminUser - Existing user check:", user ? "User exists" : "No users found, bootstrapping...");
   if (!user) {
     const hash = await hashPassword("admin");
+    console.log("ensureAdminUser - Bootstrapping admin password hash:", hash);
     await db.prepare(
       "INSERT INTO users (username, password_hash, role) VALUES ('admin', ?, 'admin')"
     ).bind(hash).run();
@@ -284,12 +286,16 @@ app.post("/api/auth/login", async (c) => {
     return jsonError(c, "Invalid or expired CAPTCHA answer.");
   }
   
+  const username = body.username.trim().toLowerCase();
+  console.log(`Login attempt for user: ${username}`);
+  
   const user = await c.env.DB.prepare(
     "SELECT * FROM users WHERE username = ? LIMIT 1"
-  ).bind(body.username).first();
+  ).bind(username).first();
   
   if (!user) {
-    await writeAuditLog(c.env.DB, "public", null, "login_failed", "user", body.username, { reason: "User not found" }, ipHash);
+    console.log(`Login failed: user '${username}' not found in database.`);
+    await writeAuditLog(c.env.DB, "public", null, "login_failed", "user", username, { reason: "User not found" }, ipHash);
     return jsonError(c, "Invalid credentials", 401);
   }
   
@@ -299,6 +305,9 @@ app.post("/api/auth/login", async (c) => {
   }
   
   const passwordHash = await hashPassword(body.password);
+  console.log(`DB stored hash: ${user.password_hash}`);
+  console.log(`Computed input hash: ${passwordHash}`);
+  
   if (passwordHash !== user.password_hash) {
     const attempts = user.failed_attempts + 1;
     let lockedUntil = null;
