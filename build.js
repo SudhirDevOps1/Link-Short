@@ -46,8 +46,9 @@ try {
     // 3. Update wrangler.toml with the database_id
     let config = fs.readFileSync('wrangler.toml', 'utf8');
     config = config.replace(/database_id = .*/, `database_id = "${dbUuid}"`);
+    config = config.replace(/database_name = .*/, `database_name = "${DB_NAME}"`);
     fs.writeFileSync('wrangler.toml', config);
-    console.log("Successfully updated wrangler.toml with D1 database_id.");
+    console.log(`Successfully updated wrangler.toml with database_name: ${DB_NAME} and database_id: ${dbUuid}`);
 
     // 4. Apply migrations to the database
     console.log("Applying database migrations...");
