@@ -513,7 +513,8 @@ app.post("/api/shorten", async (c) => {
     return jsonError(c, "Invalid or expired CAPTCHA answer.");
   }
   
-  const origin = (c.env.APP_URL || new URL(c.req.url).origin).replace(/\/$/, "");
+  const requestOrigin = new URL(c.req.url).origin;
+  const origin = (c.env.APP_URL && c.env.APP_URL !== "https://example.com" ? c.env.APP_URL : requestOrigin).replace(/\/$/, "");
   if (body.url.startsWith(origin)) {
     return jsonError(c, "Self-referencing redirection loops are blocked.");
   }
@@ -529,11 +530,15 @@ app.post("/api/shorten", async (c) => {
     const exists = await c.env.DB.prepare("SELECT 1 FROM links WHERE slug = ? LIMIT 1").bind(slug).first();
     if (exists) return jsonError(c, "Custom slug is already taken");
   } else {
-    const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     let attempts = 0;
     while (attempts < 5) {
-      const bytes = crypto.getRandomValues(new Uint8Array(6));
-      slug = [...bytes].map(b => alphabet[b % alphabet.length]).join("");
+      const hashInput = body.url + Date.now() + Math.random().toString();
+      const encoder = new TextEncoder();
+      const digest = await crypto.subtle.digest("SHA-256", encoder.encode(hashInput));
+      const fullHash = [...new Uint8Array(digest)]
+        .map(b => b.toString(16).padStart(2, "0"))
+        .join("");
+      slug = fullHash.slice(0, 8);
       const exists = await c.env.DB.prepare("SELECT 1 FROM links WHERE slug = ? LIMIT 1").bind(slug).first();
       if (!exists) break;
       attempts++;
@@ -629,9 +634,19 @@ app.post("/api/links", requireAuthUser, async (c) => {
     const exists = await c.env.DB.prepare("SELECT 1 FROM links WHERE slug = ? LIMIT 1").bind(slug).first();
     if (exists) return jsonError(c, "Slug is already taken");
   } else {
-    const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    const bytes = crypto.getRandomValues(new Uint8Array(6));
-    slug = [...bytes].map(b => alphabet[b % alphabet.length]).join("");
+    let attempts = 0;
+    while (attempts < 5) {
+      const hashInput = body.url + Date.now() + Math.random().toString();
+      const encoder = new TextEncoder();
+      const digest = await crypto.subtle.digest("SHA-256", encoder.encode(hashInput));
+      const fullHash = [...new Uint8Array(digest)]
+        .map(b => b.toString(16).padStart(2, "0"))
+        .join("");
+      slug = fullHash.slice(0, 8);
+      const exists = await c.env.DB.prepare("SELECT 1 FROM links WHERE slug = ? LIMIT 1").bind(slug).first();
+      if (!exists) break;
+      attempts++;
+    }
   }
   
   // Encrypt destination URL
@@ -652,7 +667,8 @@ app.post("/api/links", requireAuthUser, async (c) => {
   
   await writeAuditLog(c.env.DB, "user", user.id, "create_link", "link", slug, { url: "[encrypted]" }, ipHash);
   
-  const origin = (c.env.APP_URL || new URL(c.req.url).origin).replace(/\/$/, "");
+  const requestOrigin = new URL(c.req.url).origin;
+  const origin = (c.env.APP_URL && c.env.APP_URL !== "https://example.com" ? c.env.APP_URL : requestOrigin).replace(/\/$/, "");
   return c.json({
     success: true,
     data: { slug, short_url: `${origin}/${slug}`, url: body.url }
