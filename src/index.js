@@ -10,6 +10,11 @@ import dashboardHtml from "./dashboard.html";
 
 const app = new Hono();
 
+app.onError((err, c) => {
+  console.error("Global Error:", err);
+  return c.text(`Application Error: ${err.message}\nStack: ${err.stack}`, 500);
+});
+
 // Rate limiting in-memory store
 const rateMap = new Map();
 
