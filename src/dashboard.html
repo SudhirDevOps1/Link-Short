@@ -272,10 +272,18 @@
               <h2 style="margin:0">Links Catalog</h2>
               <div class="muted" id="rangeLabel">0 links</div>
             </div>
-            <form id="searchForm" style="display:flex;gap:8px;margin:0">
-              <input id="search" placeholder="Search slug or title…" style="min-width:200px;padding:8px 12px" />
-              <button type="submit" style="padding:8px 12px">Search</button>
-            </form>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <form id="searchForm" style="display:flex;gap:8px;margin:0">
+                <input id="search" placeholder="Search slug or title…" style="min-width:200px;padding:8px 12px" />
+                <button type="submit" style="padding:8px 12px">Search</button>
+              </form>
+              <select id="exportSelect" style="width:auto;padding:8px 12px" onchange="exportData(this.value)">
+                <option value="">⚡ Export Data</option>
+                <option value="csv">Export as CSV</option>
+                <option value="txt">Export as Plain Text</option>
+                <option value="pdf">Export as PDF (Print)</option>
+              </select>
+            </div>
           </div>
           <div style="overflow-x:auto">
             <table>
@@ -950,6 +958,123 @@
         showToast(err.message, true);
       }
     }
+
+    async function exportData(format) {
+      if (!format) return;
+      try {
+        showToast("Generating export...");
+        const res = await api('/api/links?limit=5000' + (state.search ? `&search=${encodeURIComponent(state.search)}` : ''));
+        const links = res.data || [];
+        if (!links.length) {
+          showToast("No data to export", true);
+          document.getElementById('exportSelect').value = '';
+          return;
+        }
+        
+        if (format === 'csv') {
+          let csv = 'Slug,Title,Original URL,Short URL,Clicks,Created At,Redirect Type\n';
+          links.forEach(l => {
+            const row = [
+              `/${l.slug}`,
+              l.title || '',
+              l.url,
+              l.short_url,
+              l.clicks,
+              l.created_at,
+              l.redirect_type
+            ].map(val => `"${String(val).replace(/"/g, '""')}"`).join(',');
+            csv += row + '\n';
+          });
+          const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+          const link = document.createElement("a");
+          link.href = URL.createObjectURL(blob);
+          link.setAttribute("download", `shortly_links_export_${Date.now()}.csv`);
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          showToast("CSV downloaded!");
+        } else if (format === 'txt') {
+          let txt = `==================================================\n`;
+          txt += `           SHORTLY URL CATALOG EXPORT              \n`;
+          txt += `==================================================\n\n`;
+          links.forEach((l, idx) => {
+            txt += `${idx + 1}. Title: ${l.title || 'Untitled'}\n`;
+            txt += `   Short URL: ${l.short_url}\n`;
+            txt += `   Original: ${l.url}\n`;
+            txt += `   Clicks: ${l.clicks} | Created: ${new Date(l.created_at).toLocaleString()} | Redirect: ${l.redirect_type}\n`;
+            txt += `--------------------------------------------------\n`;
+          });
+          const blob = new Blob([txt], { type: 'text/plain;charset=utf-8;' });
+          const link = document.createElement("a");
+          link.href = URL.createObjectURL(blob);
+          link.setAttribute("download", `shortly_links_export_${Date.now()}.txt`);
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          showToast("Plain Text downloaded!");
+        } else if (format === 'pdf') {
+          const printWin = window.open('', '_blank');
+          let html = `
+            <html>
+              <head>
+                <title>Shortly Links Catalog Report</title>
+                <style>
+                  body { font-family: system-ui, sans-serif; margin: 30px; color: #000; }
+                  h1 { border-bottom: 2px solid #333; padding-bottom: 8px; font-size: 20px; }
+                  table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+                  th, td { border: 1px solid #ccc; padding: 10px 8px; text-align: left; font-size: 12px; }
+                  th { background: #f2f2f2; font-weight: bold; }
+                  .muted { color: #555; font-size: 10px; }
+                </style>
+              </head>
+              <body>
+                <h1>Shortly Links Catalog Report</h1>
+                <p>Generated on: ${new Date().toLocaleString()}</p>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Short Link</th>
+                      <th>Original Destination</th>
+                      <th>Title</th>
+                      <th>Clicks</th>
+                      <th>Created</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+          `;
+          links.forEach(l => {
+            html += `
+              <tr>
+                <td><b>/${l.slug}</b></td>
+                <td style="word-break: break-all;">${l.url}</td>
+                <td>${l.title || '—'}</td>
+                <td>${l.clicks}</td>
+                <td>${new Date(l.created_at).toLocaleDateString()}</td>
+              </tr>
+            `;
+          });
+          html += `
+                  </tbody>
+                </table>
+                <script>
+                  window.onload = function() {
+                    window.print();
+                    setTimeout(() => window.close(), 100);
+                  };
+                <\/script>
+              </body>
+            </html>
+          `;
+          printWin.document.write(html);
+          printWin.document.close();
+        }
+      } catch (err) {
+        showToast("Export failed: " + err.message, true);
+      }
+      document.getElementById('exportSelect').value = '';
+    }
+
+    window.exportData = exportData;
 
     // Startup routing check
     routeApp();
