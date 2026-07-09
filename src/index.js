@@ -233,14 +233,20 @@ async function requireAdmin(c, next) {
 }
 
 // Bootstrap default user on first request
-async function ensureAdminUser(db) {
-  const user = await db.prepare("SELECT 1 FROM users LIMIT 1").first();
-  console.log("ensureAdminUser - Existing user check:", user ? "User exists" : "No users found, bootstrapping...");
+async function ensureAdminUser(db, env) {
+  const user = await db.prepare("SELECT * FROM users WHERE username = 'admin' LIMIT 1").first();
+  const defaultPassword = env.ADMIN_PASSWORD || "admin";
+  const hash = await hashPassword(defaultPassword);
+  
   if (!user) {
-    const hash = await hashPassword("admin");
-    console.log("ensureAdminUser - Bootstrapping admin password hash:", hash);
+    console.log("ensureAdminUser - No admin found, bootstrapping with default password.");
     await db.prepare(
       "INSERT INTO users (username, password_hash, role) VALUES ('admin', ?, 'admin')"
+    ).bind(hash).run();
+  } else if (env.ADMIN_PASSWORD) {
+    console.log("ensureAdminUser - ADMIN_PASSWORD env override detected, updating database hash.");
+    await db.prepare(
+      "UPDATE users SET password_hash = ? WHERE username = 'admin'"
     ).bind(hash).run();
   }
 }
@@ -258,7 +264,7 @@ app.use("*", checkIpBlocklist);
 
 // GET / -> HTML dashboard (includes login + admin views in one SPA)
 app.get("/", async (c) => {
-  await ensureAdminUser(c.env.DB);
+  await ensureAdminUser(c.env.DB, c.env);
   return c.html(dashboardHtml);
 });
 
