@@ -524,11 +524,13 @@ app.post("/api/shorten", async (c) => {
   
   let slug = body.slug ? body.slug.trim() : "";
   if (slug) {
-    if (!/^[a-zA-Z0-9_-]{2,64}$/.test(slug)) {
-      return jsonError(c, "Custom slug must be alphanumeric (2-64 chars)");
-    }
-    const exists = await c.env.DB.prepare("SELECT 1 FROM links WHERE slug = ? LIMIT 1").bind(slug).first();
-    if (exists) return jsonError(c, "Custom slug is already taken");
+    // Convert custom slug into a deterministic 8-character hex hash for privacy
+    const encoder = new TextEncoder();
+    const digest = await crypto.subtle.digest("SHA-256", encoder.encode(slug));
+    slug = [...new Uint8Array(digest)]
+      .map(b => b.toString(16).padStart(2, "0"))
+      .join("")
+      .slice(0, 8);
   } else {
     let attempts = 0;
     while (attempts < 5) {
@@ -628,11 +630,13 @@ app.post("/api/links", requireAuthUser, async (c) => {
   
   let slug = body.slug ? body.slug.trim() : "";
   if (slug) {
-    if (!/^[a-zA-Z0-9_-]{2,64}$/.test(slug)) {
-      return jsonError(c, "Slug must be alphanumeric (2-64 chars)");
-    }
-    const exists = await c.env.DB.prepare("SELECT 1 FROM links WHERE slug = ? LIMIT 1").bind(slug).first();
-    if (exists) return jsonError(c, "Slug is already taken");
+    // Convert custom slug into a deterministic 8-character hex hash for privacy
+    const encoder = new TextEncoder();
+    const digest = await crypto.subtle.digest("SHA-256", encoder.encode(slug));
+    slug = [...new Uint8Array(digest)]
+      .map(b => b.toString(16).padStart(2, "0"))
+      .join("")
+      .slice(0, 8);
   } else {
     let attempts = 0;
     while (attempts < 5) {
