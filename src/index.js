@@ -1,67 +1,21 @@
 /**
  * Cloudflare Workers URL Shortener
- * Stack: Hono + D1 (SQLite)
- *
- * Routes:
- *  GET  /                 Admin dashboard
- *  POST /api/links        Create short link
- *  GET  /api/links        List links
- *  PUT  /api/links/:id    Update link
- *  DELETE /api/links/:id  Soft-delete link
- *  GET  /api/stats        Overall analytics
- *  GET  /api/stats/:slug  Per-link analytics
- *  GET  /api/qr/:slug     QR metadata / image
- *  GET  /api/export       CSV export
- *  GET  /:slug            Redirect + track click
+ * Stack: Hono + D1 (SQLite) + Web Crypto
  */
 
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import dashboardHtml from "./dashboard.html";
-
-/** @typedef {{ DB: D1Database; API_KEY?: string; APP_URL?: string; DEFAULT_REDIRECT?: string; REQUIRE_API_KEY?: string }} Env */
 
 const app = new Hono();
 
-const RESERVED = new Set([
-  "api",
-  "admin",
-  "dashboard",
-  "favicon.ico",
-  "robots.txt",
-  "health",
-]);
-
+// Rate limiting in-memory store
 const rateMap = new Map();
 
-function jsonError(c, message, status = 400) {
-  return c.json({ success: false, error: message }, status);
-}
-
-function isValidUrl(value) {
-  try {
-    const u = new URL(value);
-    return u.protocol === "http:" || u.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
-function isValidSlug(slug) {
-  return /^[a-zA-Z0-9_-]{2,64}$/.test(slug || "");
-}
-
-function generateSlug(len = 6) {
-  const alphabet =
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-  const bytes = crypto.getRandomValues(new Uint8Array(len));
-  let out = "";
-  for (let i = 0; i < len; i++) out += alphabet[bytes[i] % alphabet.length];
-  return out;
-}
-
+// Helper to hash IP (SHA-256) for privacy-first tracking
 async function hashIp(ip) {
-  if (!ip) return null;
+  if (!ip) return "unknown";
   const data = new TextEncoder().encode(ip);
   const digest = await crypto.subtle.digest("SHA-256", data);
   return [...new Uint8Array(digest)]
@@ -70,550 +24,738 @@ async function hashIp(ip) {
     .slice(0, 16);
 }
 
-function originOf(c) {
-  return (c.env.APP_URL || new URL(c.req.url).origin).replace(/\/$/, "");
-}
-
-function serializeLink(row, origin) {
-  return {
-    id: row.id,
-    slug: row.slug,
-    short_url: `${origin}/${row.slug}`,
-    url: row.url,
-    title: row.title,
-    created_at: row.created_at,
-    clicks: row.clicks,
-    last_clicked: row.last_clicked,
-    is_active: !!row.is_active,
-    expires_at: row.expires_at,
-    redirect_type: row.redirect_type,
-    has_password: !!row.password,
-  };
-}
-
+// Client IP extractor
 function clientIp(c) {
   return (
     c.req.header("cf-connecting-ip") ||
     c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ||
-    "unknown"
+    "127.0.0.1"
   );
 }
 
-function rateLimit(ip, limit = 100, windowMs = 60_000) {
+// Rate Limiter: 100 requests per IP per minute
+function isRateLimited(ip, limit = 100) {
   const now = Date.now();
   const entry = rateMap.get(ip);
   if (!entry || entry.resetAt <= now) {
-    rateMap.set(ip, { count: 1, resetAt: now + windowMs });
-    return true;
+    rateMap.set(ip, { count: 1, resetAt: now + 60_000 });
+    return false;
   }
-  if (entry.count >= limit) return false;
+  if (entry.count >= limit) return true;
   entry.count += 1;
-  return true;
+  return false;
 }
 
-function requireAuth(c) {
-  // Only enforce when API_KEY secret is configured and not explicitly disabled
-  if (!c.env.API_KEY || c.env.REQUIRE_API_KEY === "false") return null;
-  const key =
-    c.req.header("x-api-key") ||
-    c.req.header("authorization")?.replace(/^Bearer\s+/i, "");
-  if (key !== c.env.API_KEY) return jsonError(c, "Unauthorized", 401);
-  return null;
+// PBKDF2 Password Hashing
+async function hashPassword(password, salt = "shortly-system-salt-value") {
+  const encoder = new TextEncoder();
+  const saltBuffer = encoder.encode(salt);
+  const passwordBuffer = encoder.encode(password);
+  
+  const baseKey = await crypto.subtle.importKey(
+    "raw",
+    passwordBuffer,
+    "PBKDF2",
+    false,
+    ["deriveBits"]
+  );
+  
+  const derivedBits = await crypto.subtle.deriveBits(
+    {
+      name: "PBKDF2",
+      salt: saltBuffer,
+      iterations: 50000,
+      hash: "SHA-256"
+    },
+    baseKey,
+    256 // 32 bytes
+  );
+  
+  return btoa(String.fromCharCode(...new Uint8Array(derivedBits)));
 }
 
-// Global middleware
-app.use("*", cors());
-app.use("/api/*", async (c, next) => {
-  const ip = clientIp(c);
-  if (!rateLimit(ip)) {
-    return jsonError(c, "Rate limit exceeded. Try again later.", 429);
+// Secure HMAC Session Cookie management
+async function createSessionToken(username, tokenVersion, secret) {
+  const expires = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
+  const payload = `${username}:${tokenVersion}:${expires}`;
+  
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(payload));
+  const sigStr = btoa(String.fromCharCode(...new Uint8Array(signature)));
+  
+  return `${btoa(payload)}.${sigStr}`;
+}
+
+async function verifySessionToken(token, secret) {
+  try {
+    if (!token) return null;
+    const parts = token.split(".");
+    if (parts.length !== 2) return null;
+    
+    const payload = atob(parts[0]);
+    const sigStr = parts[1];
+    const [username, tokenVersion, expires] = payload.split(":");
+    
+    if (Date.now() > parseInt(expires)) return null;
+    
+    const encoder = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      "raw",
+      encoder.encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["verify"]
+    );
+    
+    const signatureBytes = Uint8Array.from(atob(sigStr), c => c.charCodeAt(0));
+    const verified = await crypto.subtle.verify("HMAC", key, signatureBytes, encoder.encode(payload));
+    
+    if (!verified) return null;
+    return { username, tokenVersion: parseInt(tokenVersion) };
+  } catch {
+    return null;
   }
-  // Auth for mutating/list endpoints (not public QR metadata optionally)
-  if (c.req.method !== "OPTIONS") {
-    const path = new URL(c.req.url).pathname;
-    const publicOk = path.startsWith("/api/qr/");
-    if (!publicOk) {
-      const denied = requireAuth(c);
-      if (denied) return denied;
-    }
+}
+
+// Stateless math CAPTCHA generator
+async function generateCaptcha(secret) {
+  const a = Math.floor(Math.random() * 9) + 1;
+  const b = Math.floor(Math.random() * 9) + 1;
+  const ans = a + b;
+  const expires = Date.now() + 5 * 60 * 1000; // 5 min
+  const msg = `${ans}:${expires}`;
+  
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(msg));
+  const sigStr = btoa(String.fromCharCode(...new Uint8Array(signature)));
+  
+  return {
+    question: `What is ${a} + ${b}?`,
+    token: `${btoa(msg)}.${sigStr}`
+  };
+}
+
+async function verifyCaptcha(token, answer, secret) {
+  try {
+    if (!token || !answer) return false;
+    const parts = token.split(".");
+    if (parts.length !== 2) return false;
+    
+    const msg = atob(parts[0]);
+    const sigStr = parts[1];
+    const [ans, expires] = msg.split(":");
+    
+    if (Date.now() > parseInt(expires)) return false;
+    if (ans !== answer.trim()) return false;
+    
+    const encoder = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      "raw",
+      encoder.encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["verify"]
+    );
+    const signatureBytes = Uint8Array.from(atob(sigStr), c => c.charCodeAt(0));
+    return await crypto.subtle.verify("HMAC", key, signatureBytes, encoder.encode(msg));
+  } catch {
+    return false;
+  }
+}
+
+// JSON formatting helpers
+function jsonError(c, msg, status = 400) {
+  return c.json({ success: false, error: msg }, status);
+}
+
+// Write system Audit Log
+async function writeAuditLog(db, actorType, actorId, action, targetType, targetId, metadata, ipHash) {
+  try {
+    await db.prepare(
+      "INSERT INTO audit_logs (actor_type, actor_id, action, target_type, target_id, metadata, ip_hash) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    ).bind(actorType, actorId, action, targetType, targetId, JSON.stringify(metadata || {}), ipHash).run();
+  } catch (err) {
+    console.error("Audit log failed:", err);
+  }
+}
+
+// IP Block check middleware
+async function checkIpBlocklist(c, next) {
+  const ip = clientIp(c);
+  const ipHash = await hashIp(ip);
+  const blocked = await c.env.DB.prepare("SELECT 1 FROM blocked_ips WHERE ip_hash = ? LIMIT 1").get(ipHash);
+  if (blocked) {
+    return c.text("Forbidden: Your IP is blocked.", 403);
+  }
+  await next();
+}
+
+// Admin Gating middleware
+async function requireAdmin(c, next) {
+  const secret = c.env.AUTH_SECRET || c.env.API_KEY || "fallback-secret-64-character-for-session-management";
+  const token = getCookie(c, "session");
+  const userSession = await verifySessionToken(token, secret);
+  
+  if (!userSession) {
+    return jsonError(c, "Unauthorized: Invalid or expired session", 401);
+  }
+  
+  // Verify against database
+  const user = await c.env.DB.prepare(
+    "SELECT * FROM users WHERE username = ? LIMIT 1"
+  ).bind(userSession.username).get();
+  
+  if (!user || user.token_version !== userSession.tokenVersion) {
+    return jsonError(c, "Unauthorized: Session invalidated", 401);
+  }
+  
+  c.set("user", user);
+  await next();
+}
+
+// Bootstrap default user on first request
+async function ensureAdminUser(db) {
+  const user = await db.prepare("SELECT 1 FROM users LIMIT 1").get();
+  if (!user) {
+    const hash = await hashPassword("admin");
+    await db.prepare(
+      "INSERT INTO users (username, password_hash, role) VALUES ('admin', ?, 'admin')"
+    ).bind(hash).run();
+  }
+}
+
+// Apply core middlewares
+app.use("*", cors());
+app.use("*", async (c, next) => {
+  const ip = clientIp(c);
+  if (isRateLimited(ip)) {
+    return jsonError(c, "Rate limit exceeded. Please wait a minute.", 429);
   }
   await next();
 });
+app.use("*", checkIpBlocklist);
 
-app.get("/", (c) =>
-  c.html(typeof dashboardHtml === "string" ? dashboardHtml : String(dashboardHtml))
-);
+// GET / -> HTML dashboard (includes login + admin views in one SPA)
+app.get("/", async (c) => {
+  await ensureAdminUser(c.env.DB);
+  return c.html(dashboardHtml);
+});
 
-app.get("/health", (c) => c.json({ ok: true }));
+// GET /api/captcha -> get stateless CAPTCHA
+app.get("/api/captcha", async (c) => {
+  const secret = c.env.AUTH_SECRET || c.env.API_KEY || "captcha-signing-fallback-salt";
+  const captcha = await generateCaptcha(secret);
+  return c.json({ success: true, ...captcha });
+});
 
-// Create link
-app.post("/api/links", async (c) => {
-  try {
-    const body = await c.req.json().catch(() => null);
-    if (!body?.url || !isValidUrl(body.url)) {
-      return jsonError(c, "A valid URL with http:// or https:// is required");
-    }
+// POST /api/auth/login
+app.post("/api/auth/login", async (c) => {
+  const secret = c.env.AUTH_SECRET || c.env.API_KEY || "fallback-secret-64-character-for-session-management";
+  const body = await c.req.json().catch(() => null);
+  const ip = clientIp(c);
+  const ipHash = await hashIp(ip);
+  
+  if (!body?.username || !body?.password) {
+    return jsonError(c, "Username and password required");
+  }
 
-    // Reuse existing mapping when no custom slug
-    if (!body.slug) {
-      const existing = await c.env.DB.prepare(
-        "SELECT * FROM links WHERE url = ? AND is_active = 1 LIMIT 1"
-      )
-        .bind(body.url)
-        .first();
-      if (existing) {
-        return c.json({
-          success: true,
-          data: serializeLink(existing, originOf(c)),
-        });
-      }
-    }
-
-    let slug = (body.slug || "").trim();
-    if (slug) {
-      if (!isValidSlug(slug) || RESERVED.has(slug.toLowerCase())) {
-        return jsonError(c, "Invalid or reserved slug");
-      }
-      const clash = await c.env.DB.prepare(
-        "SELECT id FROM links WHERE slug = ? LIMIT 1"
-      )
-        .bind(slug)
-        .first();
-      if (clash) return jsonError(c, "Slug is already taken", 409);
+  // Captcha validation
+  const captchaVerified = await verifyCaptcha(body.captcha_token, body.captcha_answer, secret);
+  if (!captchaVerified) {
+    return jsonError(c, "Invalid or expired CAPTCHA answer.");
+  }
+  
+  const user = await c.env.DB.prepare(
+    "SELECT * FROM users WHERE username = ? LIMIT 1"
+  ).bind(body.username).get();
+  
+  if (!user) {
+    await writeAuditLog(c.env.DB, "public", null, "login_failed", "user", body.username, { reason: "User not found" }, ipHash);
+    return jsonError(c, "Invalid credentials", 401);
+  }
+  
+  // Lockout check
+  if (user.locked_until && new Date(user.locked_until) > new Date()) {
+    return jsonError(c, `Account locked. Try again after ${new Date(user.locked_until).toLocaleTimeString()}`, 403);
+  }
+  
+  const passwordHash = await hashPassword(body.password);
+  if (passwordHash !== user.password_hash) {
+    const attempts = user.failed_attempts + 1;
+    let lockedUntil = null;
+    
+    if (attempts >= 5) {
+      const lockDate = new Date(Date.now() + 15 * 60 * 1000); // 15 min lockout
+      lockedUntil = lockDate.toISOString();
+      await c.env.DB.prepare(
+        "UPDATE users SET failed_attempts = ?, locked_until = ? WHERE id = ?"
+      ).bind(attempts, lockedUntil, user.id).run();
+      await writeAuditLog(c.env.DB, "public", null, "account_locked", "user", user.username, { attempts }, ipHash);
+      return jsonError(c, "Account locked due to too many failed attempts. Try again in 15 minutes.", 403);
     } else {
-      for (let i = 0; i < 8; i++) {
-        const candidate = generateSlug(6);
-        const clash = await c.env.DB.prepare(
-          "SELECT id FROM links WHERE slug = ? LIMIT 1"
-        )
-          .bind(candidate)
-          .first();
-        if (!clash) {
-          slug = candidate;
-          break;
-        }
-      }
-      if (!slug) return jsonError(c, "Failed to generate slug", 500);
+      await c.env.DB.prepare(
+        "UPDATE users SET failed_attempts = ? WHERE id = ?"
+      ).bind(attempts, user.id).run();
+      await writeAuditLog(c.env.DB, "public", null, "login_failed", "user", user.username, { attempts }, ipHash);
+      return jsonError(c, `Invalid credentials. Attempts remaining: ${5 - attempts}`, 401);
     }
-
-    const redirectType =
-      body.redirect_type === 301 || body.redirectType === 301 ? 301 : 302;
-    const title = body.title || null;
-    const expiresAt = body.expires_at || body.expiresAt || null;
-    const password = body.password || null;
-
-    const result = await c.env.DB.prepare(
-      `INSERT INTO links (slug, url, title, expires_at, password, redirect_type)
-       VALUES (?, ?, ?, ?, ?, ?)
-       RETURNING *`
-    )
-      .bind(slug, body.url, title, expiresAt, password, redirectType)
-      .first();
-
-    return c.json(
-      { success: true, data: serializeLink(result, originOf(c)) },
-      201
-    );
-  } catch (err) {
-    console.error(err);
-    return jsonError(c, "Failed to create link", 500);
   }
+  
+  // Successful Login
+  await c.env.DB.prepare(
+    "UPDATE users SET failed_attempts = 0, locked_until = NULL, last_login_at = ? WHERE id = ?"
+  ).bind(new Date().toISOString(), user.id).run();
+  
+  const sessionToken = await createSessionToken(user.username, user.token_version, secret);
+  
+  setCookie(c, "session", sessionToken, {
+    httpOnly: true,
+    secure: true,
+    sameSite: "Lax",
+    maxAge: 24 * 60 * 60
+  });
+  
+  await writeAuditLog(c.env.DB, "admin", user.id, "login_success", "user", user.username, {}, ipHash);
+  
+  return c.json({ success: true, username: user.username });
 });
 
-// List links
-app.get("/api/links", async (c) => {
-  try {
-    const page = Math.max(1, Number(c.req.query("page") || 1));
-    const limit = Math.min(100, Math.max(1, Number(c.req.query("limit") || 20)));
-    const offset = (page - 1) * limit;
-    const search = (c.req.query("search") || "").trim();
-    const activeOnly = c.req.query("active") !== "false";
-
-    let where = activeOnly ? "WHERE is_active = 1" : "WHERE 1=1";
-    const binds = [];
-    if (search) {
-      where += " AND (slug LIKE ? OR url LIKE ? OR IFNULL(title,'') LIKE ?)";
-      const q = `%${search}%`;
-      binds.push(q, q, q);
-    }
-
-    const totalRow = await c.env.DB.prepare(
-      `SELECT COUNT(*) as total FROM links ${where}`
-    )
-      .bind(...binds)
-      .first();
-
-    const { results } = await c.env.DB.prepare(
-      `SELECT * FROM links ${where} ORDER BY datetime(created_at) DESC LIMIT ? OFFSET ?`
-    )
-      .bind(...binds, limit, offset)
-      .all();
-
-    const total = Number(totalRow?.total || 0);
-    const origin = originOf(c);
-    return c.json({
-      success: true,
-      data: (results || []).map((r) => serializeLink(r, origin)),
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.max(1, Math.ceil(total / limit)),
-      },
-    });
-  } catch (err) {
-    console.error(err);
-    return jsonError(c, "Failed to list links", 500);
-  }
+// POST /api/auth/logout (Admin only)
+app.post("/api/auth/logout", requireAdmin, async (c) => {
+  const user = c.get("user");
+  const ipHash = await hashIp(clientIp(c));
+  deleteCookie(c, "session");
+  await writeAuditLog(c.env.DB, "admin", user.id, "logout", "user", user.username, {}, ipHash);
+  return c.json({ success: true });
 });
 
-// Update
-app.put("/api/links/:id", async (c) => {
-  try {
-    const id = Number(c.req.param("id"));
-    if (!Number.isInteger(id) || id <= 0) return jsonError(c, "Invalid id");
-    const existing = await c.env.DB.prepare("SELECT * FROM links WHERE id = ?")
-      .bind(id)
-      .first();
-    if (!existing) return jsonError(c, "Link not found", 404);
-
-    const body = await c.req.json().catch(() => ({}));
-    let slug = existing.slug;
-    let url = existing.url;
-    let title = existing.title;
-    let isActive = existing.is_active;
-    let redirectType = existing.redirect_type;
-    let expiresAt = existing.expires_at;
-    let password = existing.password;
-
-    if (body.url !== undefined) {
-      if (!isValidUrl(body.url)) return jsonError(c, "Invalid URL");
-      url = body.url;
-    }
-    if (body.slug !== undefined) {
-      if (!isValidSlug(body.slug) || RESERVED.has(body.slug.toLowerCase())) {
-        return jsonError(c, "Invalid slug");
-      }
-      if (body.slug !== existing.slug) {
-        const clash = await c.env.DB.prepare(
-          "SELECT id FROM links WHERE slug = ? LIMIT 1"
-        )
-          .bind(body.slug)
-          .first();
-        if (clash) return jsonError(c, "Slug is already taken", 409);
-        slug = body.slug;
-      }
-    }
-    if (body.title !== undefined) title = body.title;
-    if (body.is_active !== undefined || body.isActive !== undefined) {
-      isActive = body.is_active ?? body.isActive ? 1 : 0;
-    }
-    if (body.redirect_type === 301 || body.redirectType === 301) redirectType = 301;
-    if (body.redirect_type === 302 || body.redirectType === 302) redirectType = 302;
-    if (body.expires_at !== undefined || body.expiresAt !== undefined) {
-      expiresAt = body.expires_at ?? body.expiresAt;
-    }
-    if (body.password !== undefined) password = body.password;
-
-    await c.env.DB.prepare(
-      `UPDATE links SET slug=?, url=?, title=?, is_active=?, redirect_type=?, expires_at=?, password=? WHERE id=?`
-    )
-      .bind(slug, url, title, isActive, redirectType, expiresAt, password, id)
-      .run();
-
-    if (slug !== existing.slug) {
-      await c.env.DB.prepare("UPDATE clicks SET slug = ? WHERE slug = ?")
-        .bind(slug, existing.slug)
-        .run();
-    }
-
-    const updated = await c.env.DB.prepare("SELECT * FROM links WHERE id = ?")
-      .bind(id)
-      .first();
-    return c.json({ success: true, data: serializeLink(updated, originOf(c)) });
-  } catch (err) {
-    console.error(err);
-    return jsonError(c, "Failed to update link", 500);
+// POST /api/auth/change-password (Admin only)
+app.post("/api/auth/change-password", requireAdmin, async (c) => {
+  const user = c.get("user");
+  const body = await c.req.json().catch(() => null);
+  const ipHash = await hashIp(clientIp(c));
+  
+  if (!body?.password || body.password.length < 5) {
+    return jsonError(c, "New password must be at least 5 characters long");
   }
+  
+  const newHash = await hashPassword(body.password);
+  const newTokenVersion = user.token_version + 1;
+  
+  await c.env.DB.prepare(
+    "UPDATE users SET password_hash = ?, token_version = ? WHERE id = ?"
+  ).bind(newHash, newTokenVersion, user.id).run();
+  
+  await writeAuditLog(c.env.DB, "admin", user.id, "change_password", "user", user.username, {}, ipHash);
+  
+  // Clear local session cookie
+  deleteCookie(c, "session");
+  return c.json({ success: true, message: "Password updated successfully. Please login again." });
 });
 
-// Delete (soft by default)
-app.delete("/api/links/:id", async (c) => {
-  try {
-    const id = Number(c.req.param("id"));
-    if (!Number.isInteger(id) || id <= 0) return jsonError(c, "Invalid id");
-    const existing = await c.env.DB.prepare("SELECT * FROM links WHERE id = ?")
-      .bind(id)
-      .first();
-    if (!existing) return jsonError(c, "Link not found", 404);
-
-    const hard = c.req.query("hard") === "true";
-    if (hard) {
-      await c.env.DB.prepare("DELETE FROM clicks WHERE slug = ?")
-        .bind(existing.slug)
-        .run();
-      await c.env.DB.prepare("DELETE FROM links WHERE id = ?").bind(id).run();
-      return c.json({ success: true, deleted: true, hard: true });
-    }
-
-    await c.env.DB.prepare("UPDATE links SET is_active = 0 WHERE id = ?")
-      .bind(id)
-      .run();
-    return c.json({ success: true, deleted: true, hard: false });
-  } catch (err) {
-    console.error(err);
-    return jsonError(c, "Failed to delete link", 500);
-  }
+// GET /api/auth/me (Check session state)
+app.get("/api/auth/me", async (c) => {
+  const secret = c.env.AUTH_SECRET || c.env.API_KEY || "fallback-secret-64-character-for-session-management";
+  const token = getCookie(c, "session");
+  const userSession = await verifySessionToken(token, secret);
+  if (!userSession) return c.json({ authenticated: false });
+  return c.json({ authenticated: true, username: userSession.username });
 });
 
-// Overall stats
-app.get("/api/stats", async (c) => {
-  try {
-    const totalsSafe = await c.env.DB.prepare(
-      `SELECT
-         (SELECT COUNT(*) FROM links WHERE is_active = 1) AS total_links,
-         (SELECT COALESCE(SUM(clicks),0) FROM links WHERE is_active = 1) AS total_clicks`
-    ).first();
-
-    const dates = [];
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date(Date.now() - i * 86400000);
-      dates.push(d.toISOString().slice(0, 10));
-    }
-    const since = dates[0] + " 00:00:00";
-    const { results: daily } = await c.env.DB.prepare(
-      `SELECT substr(timestamp,1,10) AS date, COUNT(*) AS clicks
-       FROM clicks WHERE timestamp >= ?
-       GROUP BY substr(timestamp,1,10)`
-    )
-      .bind(since)
-      .all();
-
-    const map = new Map((daily || []).map((r) => [r.date, Number(r.clicks)]));
-    const clicks_last_7_days = dates.map((d) => map.get(d) || 0);
-
-    const { results: top } = await c.env.DB.prepare(
-      `SELECT slug, url, title, clicks FROM links WHERE is_active = 1 ORDER BY clicks DESC LIMIT 10`
-    ).all();
-
-    return c.json({
-      success: true,
-      total_links: Number(totalsSafe?.total_links || 0),
-      total_clicks: Number(totalsSafe?.total_clicks || 0),
-      clicks_last_7_days,
-      dates_last_7_days: dates,
-      top_links: top || [],
-    });
-  } catch (err) {
-    console.error(err);
-    return jsonError(c, "Failed to load stats", 500);
+// PUBLIC: POST /api/shorten -> Create link with CAPTCHA
+app.post("/api/shorten", async (c) => {
+  const secret = c.env.AUTH_SECRET || c.env.API_KEY || "captcha-signing-fallback-salt";
+  const body = await c.req.json().catch(() => null);
+  const ip = clientIp(c);
+  const ipHash = await hashIp(ip);
+  
+  if (!body?.url || !/^https?:\/\//i.test(body.url)) {
+    return jsonError(c, "A valid URL starting with http:// or https:// is required");
   }
+  
+  // CAPTCHA check
+  const captchaVerified = await verifyCaptcha(body.captcha_token, body.captcha_answer, secret);
+  if (!captchaVerified) {
+    return jsonError(c, "Invalid or expired CAPTCHA answer.");
+  }
+  
+  // URL redirection loops protection
+  const origin = (c.env.APP_URL || new URL(c.req.url).origin).replace(/\/$/, "");
+  if (body.url.startsWith(origin)) {
+    return jsonError(c, "Self-referencing redirection loops are blocked.");
+  }
+  
+  // Check loop constraints / common extensions
+  if (/\.(exe|dmg|msi|apk|bat|sh)$/i.test(body.url)) {
+    return jsonError(c, "Executable redirects are blocked for safety.");
+  }
+  
+  let slug = body.slug ? body.slug.trim() : "";
+  
+  if (slug) {
+    if (!/^[a-zA-Z0-9_-]{2,64}$/.test(slug)) {
+      return jsonError(c, "Custom slug must be alphanumeric (2-64 chars)");
+    }
+    // Check if slug exists
+    const exists = await c.env.DB.prepare("SELECT 1 FROM links WHERE slug = ? LIMIT 1").bind(slug).get();
+    if (exists) return jsonError(c, "Custom slug is already taken");
+  } else {
+    // Generate random 6 char slug
+    const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let attempts = 0;
+    while (attempts < 5) {
+      const bytes = crypto.getRandomValues(new Uint8Array(6));
+      slug = [...bytes].map(b => alphabet[b % alphabet.length]).join("");
+      const exists = await c.env.DB.prepare("SELECT 1 FROM links WHERE slug = ? LIMIT 1").bind(slug).get();
+      if (!exists) break;
+      attempts++;
+    }
+  }
+  
+  await c.env.DB.prepare(
+    "INSERT INTO links (slug, url, title, redirect_type, created_by_ip_hash) VALUES (?, ?, ?, 302, ?)"
+  ).bind(slug, body.url, body.title || "Public Link", ipHash).run();
+  
+  await writeAuditLog(c.env.DB, "public", null, "create_link", "link", slug, { url: body.url }, ipHash);
+  
+  return c.json({
+    success: true,
+    data: {
+      slug,
+      short_url: `${origin}/${slug}`,
+      url: body.url,
+      created_at: new Date().toISOString()
+    }
+  });
 });
 
-// Per-slug stats
-app.get("/api/stats/:slug", async (c) => {
-  try {
-    const slug = c.req.param("slug");
-    const link = await c.env.DB.prepare("SELECT * FROM links WHERE slug = ?")
-      .bind(slug)
-      .first();
-    if (!link) return jsonError(c, "Link not found", 404);
-
-    const dates = [];
-    for (let i = 13; i >= 0; i--) {
-      const d = new Date(Date.now() - i * 86400000);
-      dates.push(d.toISOString().slice(0, 10));
+// ADMIN: GET /api/links (Paginated & Searchable list)
+app.get("/api/links", requireAdmin, async (c) => {
+  const query = c.req.query();
+  const search = query.search ? `%${query.search}%` : "%";
+  const limit = parseInt(query.limit) || 10;
+  const page = parseInt(query.page) || 1;
+  const offset = (page - 1) * limit;
+  const origin = (c.env.APP_URL || new URL(c.req.url).origin).replace(/\/$/, "");
+  
+  const total = await c.env.DB.prepare(
+    "SELECT COUNT(*) as count FROM links WHERE (slug LIKE ? OR url LIKE ? OR title LIKE ?) AND is_active = 1"
+  ).bind(search, search, search).get();
+  
+  const rows = await c.env.DB.prepare(
+    "SELECT * FROM links WHERE (slug LIKE ? OR url LIKE ? OR title LIKE ?) AND is_active = 1 ORDER BY created_at DESC LIMIT ? OFFSET ?"
+  ).bind(search, search, search, limit, offset).all();
+  
+  const formatted = rows.results.map(row => ({
+    ...row,
+    short_url: `${origin}/${row.slug}`,
+    is_active: !!row.is_active
+  }));
+  
+  return c.json({
+    success: true,
+    data: formatted,
+    pagination: {
+      total: total.count,
+      page,
+      limit,
+      total_pages: Math.ceil(total.count / limit)
     }
-    const since = dates[0] + " 00:00:00";
-
-    const { results: daily } = await c.env.DB.prepare(
-      `SELECT substr(timestamp,1,10) AS date, COUNT(*) AS clicks
-       FROM clicks WHERE slug = ? AND timestamp >= ?
-       GROUP BY substr(timestamp,1,10)`
-    )
-      .bind(slug, since)
-      .all();
-    const map = new Map((daily || []).map((r) => [r.date, Number(r.clicks)]));
-
-    const { results: byCountry } = await c.env.DB.prepare(
-      `SELECT COALESCE(country,'Unknown') AS country, COUNT(*) AS count
-       FROM clicks WHERE slug = ?
-       GROUP BY COALESCE(country,'Unknown')
-       ORDER BY count DESC LIMIT 20`
-    )
-      .bind(slug)
-      .all();
-
-    const { results: recent } = await c.env.DB.prepare(
-      `SELECT id, referrer, user_agent, country, city, timestamp
-       FROM clicks WHERE slug = ? ORDER BY datetime(timestamp) DESC LIMIT 25`
-    )
-      .bind(slug)
-      .all();
-
-    return c.json({
-      success: true,
-      slug: link.slug,
-      url: link.url,
-      title: link.title,
-      total_clicks: link.clicks,
-      created_at: link.created_at,
-      last_clicked: link.last_clicked,
-      is_active: !!link.is_active,
-      clicks_by_date: dates.map((date) => ({ date, clicks: map.get(date) || 0 })),
-      clicks_by_country: byCountry || [],
-      recent_clicks: recent || [],
-    });
-  } catch (err) {
-    console.error(err);
-    return jsonError(c, "Failed to load slug stats", 500);
-  }
+  });
 });
 
-// QR
+// ADMIN: POST /api/links (Authenticated create)
+app.post("/api/links", requireAdmin, async (c) => {
+  const user = c.get("user");
+  const body = await c.req.json().catch(() => null);
+  const ipHash = await hashIp(clientIp(c));
+  
+  if (!body?.url || !/^https?:\/\//i.test(body.url)) {
+    return jsonError(c, "A valid URL with http:// or https:// is required");
+  }
+  
+  let slug = body.slug ? body.slug.trim() : "";
+  if (slug) {
+    if (!/^[a-zA-Z0-9_-]{2,64}$/.test(slug)) {
+      return jsonError(c, "Slug must be alphanumeric (2-64 chars)");
+    }
+    const exists = await c.env.DB.prepare("SELECT 1 FROM links WHERE slug = ? LIMIT 1").bind(slug).get();
+    if (exists) return jsonError(c, "Slug is already taken");
+  } else {
+    const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    const bytes = crypto.getRandomValues(new Uint8Array(6));
+    slug = [...bytes].map(b => alphabet[b % alphabet.length]).join("");
+  }
+  
+  await c.env.DB.prepare(
+    "INSERT INTO links (slug, url, title, expires_at, password, redirect_type, created_by_ip_hash) VALUES (?, ?, ?, ?, ?, ?, ?)"
+  ).bind(
+    slug, 
+    body.url, 
+    body.title || null, 
+    body.expires_at || null, 
+    body.password ? await hashPassword(body.password) : null,
+    body.redirect_type || 302,
+    ipHash
+  ).run();
+  
+  await writeAuditLog(c.env.DB, "admin", user.id, "create_link", "link", slug, { url: body.url }, ipHash);
+  
+  const origin = (c.env.APP_URL || new URL(c.req.url).origin).replace(/\/$/, "");
+  return c.json({
+    success: true,
+    data: { slug, short_url: `${origin}/${slug}`, url: body.url }
+  });
+});
+
+// ADMIN: PUT /api/links/:id (Edit link)
+app.put("/api/links/:id", requireAdmin, async (c) => {
+  const user = c.get("user");
+  const id = c.req.param("id");
+  const body = await c.req.json().catch(() => null);
+  const ipHash = await hashIp(clientIp(c));
+  
+  const link = await c.env.DB.prepare("SELECT * FROM links WHERE id = ? LIMIT 1").bind(id).get();
+  if (!link) return jsonError(c, "Link not found", 404);
+  
+  if (!body?.url || !/^https?:\/\//i.test(body.url)) {
+    return jsonError(c, "A valid URL is required");
+  }
+  
+  let passwordHash = link.password;
+  if (body.password !== undefined) {
+    passwordHash = body.password ? await hashPassword(body.password) : null;
+  }
+  
+  await c.env.DB.prepare(
+    "UPDATE links SET url = ?, title = ?, expires_at = ?, password = ?, redirect_type = ? WHERE id = ?"
+  ).bind(
+    body.url, 
+    body.title || null, 
+    body.expires_at || null, 
+    passwordHash,
+    body.redirect_type || 302, 
+    id
+  ).run();
+  
+  await writeAuditLog(c.env.DB, "admin", user.id, "edit_link", "link", link.slug, { url: body.url }, ipHash);
+  
+  return c.json({ success: true });
+});
+
+// ADMIN: DELETE /api/links/:id (Soft-delete link)
+app.delete("/api/links/:id", requireAdmin, async (c) => {
+  const user = c.get("user");
+  const id = c.req.param("id");
+  const ipHash = await hashIp(clientIp(c));
+  
+  const link = await c.env.DB.prepare("SELECT * FROM links WHERE id = ? LIMIT 1").bind(id).get();
+  if (!link) return jsonError(c, "Link not found", 404);
+  
+  await c.env.DB.prepare("UPDATE links SET is_active = 0 WHERE id = ?").bind(id).run();
+  await writeAuditLog(c.env.DB, "admin", user.id, "delete_link", "link", link.slug, {}, ipHash);
+  
+  return c.json({ success: true });
+});
+
+// ADMIN: GET /api/stats (Overall dashboard stats)
+app.get("/api/stats", requireAdmin, async (c) => {
+  const totalLinks = await c.env.DB.prepare("SELECT COUNT(*) as count FROM links WHERE is_active = 1").get();
+  const totalClicks = await c.env.DB.prepare("SELECT COUNT(*) as count FROM clicks").get();
+  
+  // Clicks last 7 days chart array
+  const last7Days = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const dateStr = d.toISOString().split("T")[0];
+    const clickCount = await c.env.DB.prepare(
+      "SELECT COUNT(*) as count FROM clicks WHERE timestamp LIKE ?"
+    ).bind(`${dateStr}%`).get();
+    last7Days.push({ date: dateStr, clicks: clickCount.count });
+  }
+  
+  const topLinks = await c.env.DB.prepare(
+    "SELECT slug, url, clicks FROM links WHERE is_active = 1 ORDER BY clicks DESC LIMIT 5"
+  ).all();
+  
+  return c.json({
+    success: true,
+    total_links: totalLinks.count,
+    total_clicks: totalClicks.count,
+    clicks_last_7_days: last7Days,
+    top_links: topLinks.results
+  });
+});
+
+// ADMIN: GET /api/stats/:slug (Per-link specific stats)
+app.get("/api/stats/:slug", requireAdmin, async (c) => {
+  const slug = c.req.param("slug");
+  
+  const link = await c.env.DB.prepare("SELECT * FROM links WHERE slug = ? AND is_active = 1 LIMIT 1").bind(slug).get();
+  if (!link) return jsonError(c, "Link not found", 404);
+  
+  const clicksByCountry = await c.env.DB.prepare(
+    "SELECT country, COUNT(*) as count FROM clicks WHERE slug = ? GROUP BY country ORDER BY count DESC LIMIT 10"
+  ).bind(slug).all();
+  
+  const recentClicks = await c.env.DB.prepare(
+    "SELECT timestamp, referrer, user_agent, country, city FROM clicks WHERE slug = ? ORDER BY timestamp DESC LIMIT 20"
+  ).bind(slug).all();
+  
+  return c.json({
+    success: true,
+    slug,
+    url: link.url,
+    title: link.title,
+    clicks: link.clicks,
+    clicks_by_country: clicksByCountry.results,
+    recent_clicks: recentClicks.results
+  });
+});
+
+// ADMIN: IP Block endpoints
+app.get("/api/admin/blocked-ips", requireAdmin, async (c) => {
+  const list = await c.env.DB.prepare("SELECT * FROM blocked_ips ORDER BY created_at DESC").all();
+  return c.json({ success: true, data: list.results });
+});
+
+app.post("/api/admin/blocked-ips", requireAdmin, async (c) => {
+  const user = c.get("user");
+  const body = await c.req.json().catch(() => null);
+  const ipHash = await hashIp(clientIp(c));
+  
+  if (!body?.ip_hash) return jsonError(c, "IP Hash is required");
+  
+  await c.env.DB.prepare(
+    "INSERT OR IGNORE INTO blocked_ips (ip_hash, reason) VALUES (?, ?)"
+  ).bind(body.ip_hash, body.reason || "Manual Block").run();
+  
+  await writeAuditLog(c.env.DB, "admin", user.id, "block_ip", "ip", body.ip_hash, { reason: body.reason }, ipHash);
+  return c.json({ success: true });
+});
+
+app.delete("/api/admin/blocked-ips/:id", requireAdmin, async (c) => {
+  const user = c.get("user");
+  const id = c.req.param("id");
+  const ipHash = await hashIp(clientIp(c));
+  
+  const block = await c.env.DB.prepare("SELECT * blocked_ips WHERE id = ? LIMIT 1").bind(id).get();
+  
+  await c.env.DB.prepare("DELETE FROM blocked_ips WHERE id = ?").bind(id).run();
+  if (block) {
+    await writeAuditLog(c.env.DB, "admin", user.id, "unblock_ip", "ip", block.ip_hash, {}, ipHash);
+  }
+  return c.json({ success: true });
+});
+
+// ADMIN: Audit Trail endpoint
+app.get("/api/admin/audit-log", requireAdmin, async (c) => {
+  const logs = await c.env.DB.prepare("SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 100").all();
+  return c.json({ success: true, data: logs.results });
+});
+
+// PUBLIC: GET /api/qr/:slug -> API endpoint redirect to qrserver
 app.get("/api/qr/:slug", async (c) => {
-  try {
-    const slug = c.req.param("slug");
-    const link = await c.env.DB.prepare("SELECT * FROM links WHERE slug = ?")
-      .bind(slug)
-      .first();
-    if (!link) return jsonError(c, "Link not found", 404);
-    const shortUrl = `${originOf(c)}/${link.slug}`;
-    const size = c.req.query("size") || "300x300";
-    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=${encodeURIComponent(size)}&data=${encodeURIComponent(shortUrl)}`;
-
-    if (c.req.query("raw") === "1") {
-      const img = await fetch(qrUrl);
-      return new Response(img.body, {
-        headers: {
-          "Content-Type": img.headers.get("Content-Type") || "image/png",
-          "Cache-Control": "public, max-age=3600",
-        },
-      });
-    }
-
-    return c.json({
-      success: true,
-      slug: link.slug,
-      short_url: shortUrl,
-      qr_url: qrUrl,
-      size,
-    });
-  } catch (err) {
-    console.error(err);
-    return jsonError(c, "Failed to generate QR", 500);
-  }
+  const slug = c.req.param("slug");
+  const link = await c.env.DB.prepare("SELECT 1 FROM links WHERE slug = ? AND is_active = 1 LIMIT 1").bind(slug).get();
+  if (!link) return jsonError(c, "Slug not found", 404);
+  
+  const origin = (c.env.APP_URL || new URL(c.req.url).origin).replace(/\/$/, "");
+  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(`${origin}/${slug}`)}`;
+  
+  return c.redirect(qrUrl);
 });
 
-// CSV export
-app.get("/api/export", async (c) => {
-  try {
-    const { results } = await c.env.DB.prepare(
-      "SELECT * FROM links ORDER BY datetime(created_at) DESC"
-    ).all();
-    const origin = originOf(c);
-    const header =
-      "id,slug,short_url,url,title,clicks,created_at,last_clicked,is_active,expires_at";
-    const lines = [header];
-    for (const row of results || []) {
-      const cells = [
-        row.id,
-        row.slug,
-        `${origin}/${row.slug}`,
-        row.url,
-        row.title,
-        row.clicks,
-        row.created_at,
-        row.last_clicked,
-        row.is_active,
-        row.expires_at,
-      ].map((v) => {
-        if (v === null || v === undefined) return "";
-        const s = String(v);
-        return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-      });
-      lines.push(cells.join(","));
-    }
-    return new Response(lines.join("\n"), {
-      headers: {
-        "Content-Type": "text/csv; charset=utf-8",
-        "Content-Disposition": 'attachment; filename="links-export.csv"',
-      },
-    });
-  } catch (err) {
-    console.error(err);
-    return jsonError(c, "Failed to export", 500);
-  }
-});
-
-// Redirect + analytics
+// PUBLIC REDIRECT: GET /:slug
 app.get("/:slug", async (c) => {
   const slug = c.req.param("slug");
-  if (!isValidSlug(slug) || RESERVED.has(slug.toLowerCase())) {
-    return c.notFound();
+  
+  // Skip routing reserved words
+  const reserved = ["api", "health", "favicon.ico"];
+  if (reserved.includes(slug)) return c.notFound();
+  
+  const link = await c.env.DB.prepare("SELECT * FROM links WHERE slug = ? AND is_active = 1 LIMIT 1").bind(slug).get();
+  if (!link) return c.notFound();
+  
+  // Expiration date validation
+  if (link.expires_at && new Date(link.expires_at) < new Date()) {
+    return c.text("Expired: This short link has expired.", 410);
   }
-
-  try {
-    const link = await c.env.DB.prepare(
-      "SELECT * FROM links WHERE slug = ? AND is_active = 1 LIMIT 1"
-    )
-      .bind(slug)
-      .first();
-
-    if (!link) {
-      return c.html(
-        `<!doctype html><html><body style="font-family:system-ui;background:#0f172a;color:#e2e8f0;display:grid;place-items:center;min-height:100vh"><div><h1>404</h1><p>Short link /${slug} not found.</p><a href="/" style="color:#38bdf8">Dashboard</a></div></body></html>`,
-        404
-      );
+  
+  // Password protection validation
+  if (link.password) {
+    const pwInput = c.req.query("password");
+    if (!pwInput) {
+      return c.html(`
+        <html>
+          <head>
+            <title>Password Required</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <style>
+              body { font-family: system-ui, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #0f172a; color: #f8fafc; }
+              form { background: #1e293b; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); width: 300px; }
+              input { width: 100%; padding: 0.5rem; margin: 0.5rem 0 1rem; box-sizing: border-box; border-radius: 4px; border: 1px solid #475569; background: #0f172a; color: #fff; }
+              button { width: 100%; padding: 0.5rem; background: #3b82f6; border: none; color: #fff; border-radius: 4px; cursor: pointer; }
+            </style>
+          </head>
+          <body>
+            <form method="GET">
+              <h3>Password Protected Link</h3>
+              <label>Enter Password:</label>
+              <input type="password" name="password" required autofocus />
+              <button type="submit">Access Redirect</button>
+            </form>
+          </body>
+        </html>
+      `, 401);
     }
-
-    if (link.expires_at && new Date(link.expires_at).getTime() < Date.now()) {
-      return c.html(
-        `<!doctype html><html><body style="font-family:system-ui;background:#0f172a;color:#e2e8f0;display:grid;place-items:center;min-height:100vh"><div><h1>Expired</h1><p>Short link /${slug} has expired.</p><a href="/" style="color:#38bdf8">Dashboard</a></div></body></html>`,
-        410
-      );
+    
+    const inputHash = await hashPassword(pwInput);
+    if (inputHash !== link.password) {
+      return c.text("Unauthorized: Incorrect link password", 401);
     }
-
-    if (link.password) {
-      const provided = c.req.query("p");
-      if (provided !== link.password) {
-        return c.html(
-          `<!doctype html><html><body style="font-family:system-ui;background:#0f172a;color:#e2e8f0;display:grid;place-items:center;min-height:100vh"><form method="GET" style="background:#1e293b;padding:24px;border-radius:12px"><h1>Protected link</h1><input type="password" name="p" placeholder="Password" required style="width:100%;padding:10px;margin:8px 0"/><button style="width:100%;padding:10px">Continue</button></form></body></html>`,
-          401
-        );
-      }
-    }
-
-    const referrer = c.req.header("referer") || null;
-    const userAgent = c.req.header("user-agent") || null;
-    const country = c.req.header("cf-ipcountry") || null;
-    const city = c.req.raw.cf?.city || null;
-    const ip = clientIp(c);
-    const ipHash = await hashIp(ip);
-
-    // Non-blocking click logging
-    c.executionCtx.waitUntil(
-      (async () => {
-        await c.env.DB.prepare(
-          `INSERT INTO clicks (slug, referrer, user_agent, country, city, ip_hash)
-           VALUES (?, ?, ?, ?, ?, ?)`
-        )
-          .bind(slug, referrer, userAgent, country, city, ipHash)
-          .run();
-        await c.env.DB.prepare(
-          `UPDATE links SET clicks = clicks + 1, last_clicked = datetime('now') WHERE slug = ?`
-        )
-          .bind(slug)
-          .run();
-      })().catch((err) => console.error("click log failed", err))
-    );
-
-    const status = link.redirect_type === 301 ? 301 : 302;
-    return c.redirect(link.url, status);
-  } catch (err) {
-    console.error(err);
-    return jsonError(c, "Redirect failed", 500);
   }
+  
+  // Log click event asynchronously using executionCtx.waitUntil
+  const ip = clientIp(c);
+  const userAgent = c.req.header("user-agent") || "";
+  const referrer = c.req.header("referer") || "";
+  const country = c.req.header("cf-ipcountry") || "unknown";
+  const city = c.req.header("cf-ipcity") || "";
+  
+  c.executionCtx.waitUntil((async () => {
+    try {
+      const ipHash = await hashIp(ip);
+      // Insert click details
+      await c.env.DB.prepare(
+        "INSERT INTO clicks (slug, referrer, user_agent, country, city, ip_hash) VALUES (?, ?, ?, ?, ?, ?)"
+      ).bind(slug, referrer, userAgent, country, city, ipHash).run();
+      
+      // Update link click counters
+      await c.env.DB.prepare(
+        "UPDATE links SET clicks = clicks + 1, last_clicked = ? WHERE id = ?"
+      ).bind(new Date().toISOString(), link.id).run();
+    } catch (err) {
+      console.error("Failed to log click statistics asynchronously:", err);
+    }
+  })());
+  
+  return c.redirect(link.url, link.redirect_type || 302);
 });
 
 export default app;

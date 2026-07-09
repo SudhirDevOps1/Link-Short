@@ -3,317 +3,777 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Shortly — URL Shortener</title>
+  <title>Shortly — URL Shortener Dashboard</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <style>
-    :root { color-scheme: dark; --bg:#0f172a; --card:#1e293b; --line:#334155; --text:#e2e8f0; --muted:#94a3b8; --accent:#38bdf8; --danger:#fb7185; }
+    :root {
+      color-scheme: dark;
+      --bg: #0f172a;
+      --card: #1e293b;
+      --line: #334155;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --danger: #fb7185;
+      --success: #10b981;
+    }
     * { box-sizing: border-box; }
-    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:var(--bg); color:var(--text); }
-    .wrap { max-width:1100px; margin:0 auto; padding:24px 16px 48px; }
-    h1 { margin:0 0 4px; font-size:2rem; }
-    .sub { color:var(--muted); margin:0 0 24px; }
-    .grid { display:grid; gap:16px; }
-    @media (min-width:900px){ .grid-2 { grid-template-columns: 1.2fr .8fr; } }
-    .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px; }
-    label { display:grid; gap:6px; font-size:.9rem; color:var(--muted); margin-bottom:10px; }
-    input, select, button { font:inherit; }
-    input, select { width:100%; padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:#0b1220; color:var(--text); }
-    button { border:1px solid var(--line); background:#0b1220; color:var(--text); border-radius:10px; padding:8px 12px; cursor:pointer; }
-    button.primary { background:var(--accent); color:#082f49; border:none; font-weight:700; }
-    button.danger { color:var(--danger); border-color:rgba(251,113,133,.4); }
-    .stats { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:16px; }
-    .stat { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:12px; }
-    .stat b { display:block; font-size:1.4rem; margin-top:4px; }
-    .stat span { color:var(--muted); font-size:.75rem; text-transform:uppercase; letter-spacing:.04em; }
-    table { width:100%; border-collapse:collapse; font-size:.9rem; }
-    th, td { text-align:left; padding:10px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
-    th { color:var(--muted); font-size:.75rem; text-transform:uppercase; letter-spacing:.04em; }
-    .actions { display:flex; flex-wrap:wrap; gap:6px; }
-    .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:space-between; margin-bottom:12px; }
-    .muted { color:var(--muted); font-size:.85rem; }
-    a { color:var(--accent); }
-    .toast { position:fixed; right:16px; bottom:16px; background:#10b981; color:#052e1c; padding:10px 14px; border-radius:10px; font-weight:600; display:none; }
-    .toast.err { background:#f43f5e; color:#fff; }
-    dialog { border:1px solid var(--line); border-radius:16px; background:var(--card); color:var(--text); padding:0; max-width:720px; width:calc(100% - 24px); }
-    dialog::backdrop { background:rgba(0,0,0,.65); }
-    .dlg { padding:16px; }
-    .dlg h3 { margin:0 0 12px; }
-    .chart-box { height:220px; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .wrap { max-width: 1200px; margin: 0 auto; padding: 24px 16px 48px; }
+    header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; border-bottom: 1px solid var(--line); padding-bottom: 16px; }
+    h1 { margin: 0; font-size: 1.8rem; display: flex; align-items: center; gap: 8px; }
+    h1 span { font-size: 0.8rem; background: var(--accent); color: #fff; padding: 2px 8px; border-radius: 99px; }
+    
+    .nav-tabs { display: flex; gap: 8px; margin-bottom: 24px; }
+    .tab-btn { background: transparent; border: 1px solid transparent; color: var(--muted); padding: 8px 16px; border-radius: 8px; cursor: pointer; font-weight: 500; }
+    .tab-btn.active { background: var(--card); border-color: var(--line); color: var(--text); }
+    
+    .grid { display: grid; gap: 16px; }
+    @media (min-width: 900px) { .grid-2 { grid-template-columns: 1.2fr 0.8fr; } }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 20px; }
+    h2 { margin: 0 0 16px; font-size: 1.3rem; }
+    
+    label { display: block; margin-bottom: 12px; font-size: 0.85rem; color: var(--muted); }
+    label span { display: block; margin-bottom: 6px; }
+    input, select, button { font: inherit; }
+    input, select { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: #0b1220; color: var(--text); outline: none; }
+    input:focus, select:focus { border-color: var(--accent); }
+    
+    button { border: 1px solid var(--line); background: #0b1220; color: var(--text); border-radius: 8px; padding: 10px 16px; cursor: pointer; transition: all 0.2s; font-weight: 500; }
+    button:hover { background: var(--line); }
+    button.primary { background: var(--accent); color: #fff; border: none; }
+    button.primary:hover { background: var(--accent-hover); }
+    button.danger { color: var(--danger); border-color: rgba(251, 113, 133, 0.4); }
+    button.danger:hover { background: rgba(251, 113, 133, 0.1); }
+    
+    .stats-bar { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 24px; }
+    .stat-card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; text-align: center; }
+    .stat-card span { display: block; color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .stat-card b { display: block; font-size: 1.8rem; margin-top: 8px; color: var(--accent); }
+    
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    th, td { text-align: left; padding: 12px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+    th { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+    tr:hover td { background: rgba(255, 255, 255, 0.02); }
+    
+    .actions { display: flex; gap: 6px; }
+    .row-flex { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+    .muted { color: var(--muted); font-size: 0.8rem; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    
+    .toast { position: fixed; right: 16px; bottom: 16px; background: var(--success); color: #fff; padding: 12px 20px; border-radius: 8px; font-weight: 600; display: none; z-index: 1000; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+    .toast.err { background: var(--danger); }
+    
+    dialog { border: 1px solid var(--line); border-radius: 16px; background: var(--card); color: var(--text); padding: 0; max-width: 600px; width: calc(100% - 24px); box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+    dialog::backdrop { background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(4px); }
+    .dlg { padding: 24px; }
+    .dlg-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+    .dlg-header h3 { margin: 0; font-size: 1.2rem; }
+    
+    .chart-box { height: 220px; position: relative; }
+    
+    /* Login Page Centered form */
+    .login-container { display: flex; align-items: center; justify-content: center; min-height: 80vh; }
+    .login-card { width: 100%; max-width: 400px; background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 32px; }
+    .captcha-box { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
+    .captcha-q { font-size: 1rem; font-weight: 600; color: var(--accent); background: #0b1220; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); flex-grow: 1; text-align: center; }
+    
+    .hidden { display: none !important; }
+    .tabs-content { display: none; }
+    .tabs-content.active { display: block; }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>Shortly</h1>
-    <p class="sub">Privacy-friendly URL shortener with analytics, QR codes, and a public API.</p>
-
-    <div class="stats">
-      <div class="stat"><span>Total links</span><b id="statLinks">—</b></div>
-      <div class="stat"><span>Total clicks</span><b id="statClicks">—</b></div>
-      <div class="stat"><span>7-day clicks</span><b id="statWeek">—</b></div>
-    </div>
-
-    <div class="grid grid-2">
-      <section class="card">
-        <h2>Create short link</h2>
-        <form id="createForm">
-          <label>Destination URL *<input id="url" type="url" required placeholder="https://example.com/long/path" /></label>
-          <label>Custom slug<input id="slug" placeholder="optional" /></label>
-          <label>Title<input id="title" placeholder="optional" /></label>
-          <label>Redirect
-            <select id="redirectType">
-              <option value="302">302 Temporary</option>
-              <option value="301">301 Permanent</option>
-            </select>
+    
+    <!-- LOGIN VIEW -->
+    <div id="loginView" class="login-container hidden">
+      <div class="login-card">
+        <h2 style="text-align:center;margin-bottom:8px">Shortly Admin</h2>
+        <p style="text-align:center;color:var(--muted);margin-top:0;font-size:0.85rem">Please authenticate to access dashboard</p>
+        <form id="loginForm">
+          <label>
+            <span>Username</span>
+            <input type="text" id="loginUser" required placeholder="admin" autofocus />
           </label>
-          <button class="primary" type="submit">Shorten URL</button>
+          <label>
+            <span>Password</span>
+            <input type="password" id="loginPass" required placeholder="••••••••" />
+          </label>
+          <label>
+            <span>CAPTCHA Verification</span>
+            <div class="captcha-box">
+              <span id="loginCaptchaQ" class="captcha-q">Loading...</span>
+              <input type="text" id="loginCaptchaA" style="width:100px" required placeholder="Answer" />
+            </div>
+            <input type="hidden" id="loginCaptchaToken" />
+          </label>
+          <button class="primary" type="submit" style="width:100%;margin-top:8px">Login</button>
         </form>
-      </section>
-      <section class="card">
-        <div class="row"><h2 style="margin:0">Clicks · 7 days</h2><a href="/api/export">Export CSV</a></div>
-        <div class="chart-box"><canvas id="overviewChart"></canvas></div>
-      </section>
+      </div>
     </div>
 
-    <section class="card" style="margin-top:16px">
-      <div class="row">
-        <div>
-          <h2 style="margin:0">All links</h2>
-          <div class="muted" id="rangeLabel">0 links</div>
+    <!-- MAIN APP VIEW -->
+    <div id="appView" class="hidden">
+      <header>
+        <h1>Shortly <span>Admin Portal</span></h1>
+        <div style="display:flex;align-items:center;gap:12px">
+          <span class="muted" id="userDisplay">Welcome</span>
+          <button id="logoutBtn" class="danger" style="padding:6px 12px;font-size:0.8rem">Logout</button>
         </div>
-        <form id="searchForm" class="row" style="margin:0">
-          <input id="search" placeholder="Search slug or URL…" style="min-width:220px" />
-          <button type="submit">Search</button>
-        </form>
+      </header>
+
+      <div class="nav-tabs">
+        <button class="tab-btn active" data-tab="linksTab">Links & stats</button>
+        <button class="tab-btn" data-tab="securityTab">Security & Blocks</button>
+        <button class="tab-btn" data-tab="settingsTab">Settings</button>
       </div>
-      <div style="overflow:auto">
-        <table>
-          <thead>
-            <tr>
-              <th>#</th><th>Slug</th><th>URL</th><th>Clicks</th><th>Created</th><th>Last click</th><th>Actions</th>
-            </tr>
-          </thead>
-          <tbody id="tbody"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
-        </table>
+
+      <!-- TAB 1: LINKS AND STATS -->
+      <div id="linksTab" class="tabs-content active">
+        <div class="stats-bar">
+          <div class="stat-card"><span>Total Links</span><b id="statLinks">—</b></div>
+          <div class="stat-card"><span>Total Clicks</span><b id="statClicks">—</b></div>
+          <div class="stat-card"><span>7-Day clicks</span><b id="statWeek">—</b></div>
+        </div>
+
+        <div class="grid grid-2">
+          <section class="card">
+            <h2>Create New Link</h2>
+            <form id="createForm">
+              <label>
+                <span>Destination URL *</span>
+                <input id="url" type="url" required placeholder="https://example.com/long/path" />
+              </label>
+              <label>
+                <span>Custom Alias/Slug (Optional)</span>
+                <input id="slug" placeholder="e.g. promo" />
+              </label>
+              <label>
+                <span>Title / Description</span>
+                <input id="title" placeholder="Internal name" />
+              </label>
+              <div class="grid" style="grid-template-columns:1fr 1fr;gap:8px">
+                <label>
+                  <span>Redirect type</span>
+                  <select id="redirectType">
+                    <option value="302">302 Temporary</option>
+                    <option value="301">301 Permanent</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Expiration date</span>
+                  <input id="expiresAt" type="datetime-local" />
+                </label>
+              </div>
+              <label>
+                <span>Password protection (Optional)</span>
+                <input id="linkPassword" type="password" placeholder="Leave empty for public redirect" />
+              </label>
+              <button class="primary" type="submit" style="width:100%;margin-top:8px">Create Short URL</button>
+            </form>
+          </section>
+
+          <section class="card">
+            <h2 style="margin-bottom:8px">Analytics · 7 days</h2>
+            <div class="chart-box">
+              <canvas id="overviewChart"></canvas>
+            </div>
+          </section>
+        </div>
+
+        <!-- Links Table Section -->
+        <section class="card" style="margin-top:16px">
+          <div class="row-flex">
+            <div>
+              <h2 style="margin:0">Active Links</h2>
+              <div class="muted" id="rangeLabel">0 links</div>
+            </div>
+            <form id="searchForm" style="display:flex;gap:8px;margin:0">
+              <input id="search" placeholder="Search slug or URL…" style="min-width:200px;padding:8px 12px" />
+              <button type="submit" style="padding:8px 12px">Search</button>
+            </form>
+          </div>
+          <div style="overflow-x:auto">
+            <table>
+              <thead>
+                <tr>
+                  <th>Slug</th><th>URL</th><th>Clicks</th><th>Created</th><th>Redirect</th><th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="tbody"><tr><td colspan="6" class="muted">Loading...</td></tr></tbody>
+            </table>
+          </div>
+          <div class="row-flex" style="margin-top:16px;justify-content:flex-end">
+            <button id="prevBtn" type="button" style="padding:6px 12px">Previous</button>
+            <span class="muted" id="pageLabel" style="align-self:center;margin:0 12px">Page 1</span>
+            <button id="nextBtn" type="button" style="padding:6px 12px">Next</button>
+          </div>
+        </section>
       </div>
-      <div class="row" style="margin-top:12px">
-        <button id="prevBtn" type="button">Previous</button>
-        <span class="muted" id="pageLabel">Page 1</span>
-        <button id="nextBtn" type="button">Next</button>
+
+      <!-- TAB 2: SECURITY & BLOCKS -->
+      <div id="securityTab" class="tabs-content">
+        <div class="grid grid-2">
+          <section class="card">
+            <h2>IP Blocklist Management</h2>
+            <form id="blockForm" style="margin-bottom:20px">
+              <label>
+                <span>IP Address SHA-256 Hash</span>
+                <input id="blockIpHash" required placeholder="e.g. fd44a30e84b8..." />
+              </label>
+              <label>
+                <span>Reason</span>
+                <input id="blockReason" required placeholder="e.g. Brute force attempts" />
+              </label>
+              <button class="primary" type="submit">Block IP Hash</button>
+            </form>
+            <div style="overflow-x:auto">
+              <table>
+                <thead>
+                  <tr>
+                    <th>IP Hash</th><th>Reason</th><th>Created</th><th>Action</th>
+                  </tr>
+                </thead>
+                <tbody id="blocklistTbody"><tr><td colspan="4" class="muted">Loading blocklist...</td></tr></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="card">
+            <h2>Live Audit Logs</h2>
+            <div style="overflow-y:auto;max-height:500px">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Actor</th><th>Action</th><th>Target</th><th>Timestamp</th>
+                  </tr>
+                </thead>
+                <tbody id="auditLogsTbody"><tr><td colspan="4" class="muted">Loading audit logs...</td></tr></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
       </div>
-    </section>
+
+      <!-- TAB 3: SETTINGS -->
+      <div id="settingsTab" class="tabs-content">
+        <section class="card" style="max-width:500px">
+          <h2>Change Admin Password</h2>
+          <form id="changePasswordForm">
+            <label>
+              <span>New Password</span>
+              <input type="password" id="newPassword" required minlength="5" placeholder="New Password" />
+            </label>
+            <label>
+              <span>Confirm New Password</span>
+              <input type="password" id="confirmNewPassword" required minlength="5" placeholder="Confirm Password" />
+            </label>
+            <button class="primary" type="submit">Update Password</button>
+          </form>
+        </section>
+      </div>
+
+    </div>
   </div>
 
+  <!-- EDIT DIALOG -->
   <dialog id="editDlg"><div class="dlg">
-    <h3>Edit link</h3>
+    <div class="dlg-header"><h3>Edit Link Parameters</h3><button type="button" id="editCancel" style="padding:4px 8px;font-size:0.8rem">✕</button></div>
     <form id="editForm">
       <input type="hidden" id="editId" />
-      <label>URL<input id="editUrl" type="url" required /></label>
-      <label>Slug<input id="editSlug" required /></label>
-      <label>Title<input id="editTitle" /></label>
-      <label>Redirect
-        <select id="editRedirect">
-          <option value="302">302</option>
-          <option value="301">301</option>
-        </select>
-      </label>
-      <label style="display:flex;align-items:center;gap:8px;color:var(--text)"><input id="editActive" type="checkbox" /> Active</label>
-      <div class="row" style="justify-content:flex-end">
-        <button type="button" id="editCancel">Cancel</button>
-        <button class="primary" type="submit">Save</button>
+      <label><span>Destination URL</span><input id="editUrl" type="url" required /></label>
+      <label><span>Title/Description</span><input id="editTitle" /></label>
+      <div class="grid" style="grid-template-columns:1fr 1fr;gap:8px">
+        <label>
+          <span>Redirect Type</span>
+          <select id="editRedirect">
+            <option value="302">302</option>
+            <option value="301">301</option>
+          </select>
+        </label>
+        <label><span>Expiration Date</span><input id="editExpires" type="datetime-local" /></label>
+      </div>
+      <label><span>Update Link Password</span><input id="editPassword" type="password" placeholder="Leave blank to keep existing password" /></label>
+      <div class="row-flex" style="justify-content:flex-end;margin-top:16px">
+        <button class="primary" type="submit">Save Updates</button>
       </div>
     </form>
   </div></dialog>
 
+  <!-- STATS DIALOG -->
   <dialog id="statsDlg"><div class="dlg">
-    <div class="row"><h3 id="statsTitle" style="margin:0">Analytics</h3><button type="button" id="statsClose">Close</button></div>
-    <div class="chart-box"><canvas id="detailChart"></canvas></div>
-    <div class="grid" style="margin-top:12px">
+    <div class="dlg-header"><h3 id="statsTitle">Link Analytics</h3><button type="button" id="statsClose" style="padding:4px 8px">✕</button></div>
+    <div class="grid">
       <div>
-        <h4>By country</h4>
-        <div id="byCountry" class="muted">—</div>
+        <h4 style="margin:0 0 8px">Clicks by Country</h4>
+        <div id="byCountry" class="muted">No data</div>
       </div>
       <div>
-        <h4>Recent</h4>
-        <div id="recent" class="muted">—</div>
+        <h4 style="margin:0 0 8px">Recent Clicks Activity</h4>
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr><th>Time</th><th>Referrer</th><th>Country</th></tr></thead>
+            <tbody id="recentClicksTbody"><tr><td colspan="3" class="muted">Loading...</td></tr></tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div></dialog>
 
+  <!-- QR DIALOG -->
   <dialog id="qrDlg"><div class="dlg" style="text-align:center">
-    <div class="row"><h3 id="qrTitle" style="margin:0">QR</h3><button type="button" id="qrClose">Close</button></div>
-    <img id="qrImg" alt="QR code" width="300" height="300" style="background:#fff;border-radius:12px;padding:12px;margin:12px auto;display:block" />
+    <div class="dlg-header"><h3>Link QR Code</h3><button type="button" id="qrClose" style="padding:4px 8px">✕</button></div>
+    <img id="qrImg" alt="QR Code" width="260" height="260" style="background:#fff;border-radius:12px;padding:12px;margin:12px auto;display:block" />
   </div></dialog>
 
   <div class="toast" id="toast"></div>
 
   <script>
-    const state = { page: 1, search: '', overviewChart: null, detailChart: null };
+    const state = { page: 1, search: '', overviewChart: null, currentTab: 'linksTab' };
 
-    function toast(msg, err=false) {
+    function showToast(msg, err=false) {
       const el = document.getElementById('toast');
       el.textContent = msg;
       el.className = 'toast' + (err ? ' err' : '');
       el.style.display = 'block';
-      setTimeout(() => el.style.display = 'none', 2500);
+      setTimeout(() => el.style.display = 'none', 3000);
     }
 
-    async function api(path, opts) {
+    async function api(path, opts = {}) {
       const res = await fetch(path, opts);
       const json = await res.json().catch(() => ({}));
-      if (!res.ok || json.success === false) throw new Error(json.error || res.statusText);
+      if (!res.ok || json.success === false) {
+        if (res.status === 401) {
+          checkSession(); // Trigger redirect to login
+        }
+        throw new Error(json.error || res.statusText);
+      }
       return json;
     }
 
-    function fmt(d) { return d ? new Date(d).toLocaleString() : '—'; }
-    function trunc(s, n=48) { return !s ? '' : (s.length > n ? s.slice(0,n-1)+'…' : s); }
-
-    async function loadStats() {
-      const s = await api('/api/stats');
-      document.getElementById('statLinks').textContent = s.total_links;
-      document.getElementById('statClicks').textContent = s.total_clicks;
-      document.getElementById('statWeek').textContent = (s.clicks_last_7_days||[]).reduce((a,b)=>a+b,0);
-      const ctx = document.getElementById('overviewChart');
-      if (state.overviewChart) state.overviewChart.destroy();
-      state.overviewChart = new Chart(ctx, {
-        type: 'line',
-        data: {
-          labels: (s.dates_last_7_days||[]).map(d => d.slice(5)),
-          datasets: [{ label: 'Clicks', data: s.clicks_last_7_days||[], borderColor:'#38bdf8', backgroundColor:'rgba(56,189,248,.15)', fill:true, tension:.35 }]
-        },
-        options: { responsive:true, maintainAspectRatio:false, plugins:{ legend:{ display:false } }, scales:{ x:{ ticks:{ color:'#94a3b8' } }, y:{ beginAtZero:true, ticks:{ color:'#94a3b8', precision:0 } } } }
-      });
+    function fmtDate(d) {
+      return d ? new Date(d).toLocaleString() : '—';
     }
 
-    async function loadLinks(page=1) {
+    function truncateStr(s, n=45) {
+      return !s ? '' : (s.length > n ? s.slice(0, n-1)+'…' : s);
+    }
+
+    // Auth verification
+    async function checkSession() {
+      try {
+        const res = await api('/api/auth/me');
+        if (res.authenticated) {
+          document.getElementById('loginView').classList.add('hidden');
+          document.getElementById('appView').classList.remove('hidden');
+          document.getElementById('userDisplay').textContent = `Logged in as ${res.username}`;
+          loadAllData();
+        } else {
+          document.getElementById('appView').classList.add('hidden');
+          document.getElementById('loginView').classList.remove('hidden');
+          loadCaptcha();
+        }
+      } catch (err) {
+        document.getElementById('appView').classList.add('hidden');
+        document.getElementById('loginView').classList.remove('hidden');
+        loadCaptcha();
+      }
+    }
+
+    // CAPTCHA loading
+    async function loadCaptcha() {
+      try {
+        const res = await api('/api/captcha');
+        document.getElementById('loginCaptchaQ').textContent = res.question;
+        document.getElementById('loginCaptchaToken').value = res.token;
+        document.getElementById('loginCaptchaA').value = '';
+      } catch (err) {
+        showToast("Error loading captcha", true);
+      }
+    }
+
+    // Form handlers
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        await api('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: document.getElementById('loginUser').value,
+            password: document.getElementById('loginPass').value,
+            captcha_token: document.getElementById('loginCaptchaToken').value,
+            captcha_answer: document.getElementById('loginCaptchaA').value
+          })
+        });
+        showToast("Authenticated successfully");
+        checkSession();
+      } catch (err) {
+        showToast(err.message, true);
+        loadCaptcha();
+      }
+    });
+
+    document.getElementById('logoutBtn').addEventListener('click', async () => {
+      try {
+        await api('/api/auth/logout', { method: 'POST' });
+        showToast("Logged out");
+        checkSession();
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    });
+
+    // Change Password
+    document.getElementById('changePasswordForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const p1 = document.getElementById('newPassword').value;
+      const p2 = document.getElementById('confirmNewPassword').value;
+      if (p1 !== p2) {
+        showToast("Passwords do not match", true);
+        return;
+      }
+      try {
+        const res = await api('/api/auth/change-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: p1 })
+        });
+        showToast(res.message || "Password changed successfully.");
+        document.getElementById('changePasswordForm').reset();
+        checkSession();
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    });
+
+    // Tab Switching
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.tabs-content').forEach(c => c.classList.remove('active'));
+        
+        btn.classList.add('active');
+        const tabId = btn.getAttribute('data-tab');
+        document.getElementById(tabId).classList.add('active');
+        state.currentTab = tabId;
+        loadTabContent(tabId);
+      });
+    });
+
+    function loadTabContent(tabId) {
+      if (tabId === 'linksTab') {
+        loadStats();
+        loadLinks(state.page);
+      } else if (tabId === 'securityTab') {
+        loadBlocklist();
+        loadAuditLogs();
+      }
+    }
+
+    function loadAllData() {
+      loadTabContent(state.currentTab);
+    }
+
+    // Stats chart
+    async function loadStats() {
+      try {
+        const s = await api('/api/stats');
+        document.getElementById('statLinks').textContent = s.total_links;
+        document.getElementById('statClicks').textContent = s.total_clicks;
+        
+        const last7 = s.clicks_last_7_days || [];
+        document.getElementById('statWeek').textContent = last7.reduce((sum, item) => sum + item.clicks, 0);
+        
+        const ctx = document.getElementById('overviewChart');
+        if (state.overviewChart) state.overviewChart.destroy();
+        state.overviewChart = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: last7.map(item => item.date.slice(5)),
+            datasets: [{
+              label: 'Clicks',
+              data: last7.map(item => item.clicks),
+              borderColor: '#3b82f6',
+              backgroundColor: 'rgba(59, 130, 246, 0.15)',
+              fill: true,
+              tension: 0.3
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+              x: { ticks: { color: '#94a3b8' } },
+              y: { beginAtZero: true, ticks: { color: '#94a3b8', precision: 0 } }
+            }
+          }
+        });
+      } catch (err) {
+        showToast("Error loading stats: " + err.message, true);
+      }
+    }
+
+    // Links list
+    async function loadLinks(page = 1) {
       state.page = page;
-      const q = new URLSearchParams({ page:String(page), limit:'10' });
+      const q = new URLSearchParams({ page: String(page), limit: '10' });
       if (state.search) q.set('search', state.search);
-      const json = await api('/api/links?' + q.toString());
-      const tbody = document.getElementById('tbody');
-      if (!json.data.length) {
-        tbody.innerHTML = '<tr><td colspan="7" class="muted">No links yet.</td></tr>';
-      } else {
+      
+      try {
+        const json = await api('/api/links?' + q.toString());
+        const tbody = document.getElementById('tbody');
+        document.getElementById('pageLabel').textContent = `Page ${page} of ${json.pagination.total_pages || 1}`;
+        document.getElementById('rangeLabel').textContent = `${json.pagination.total} links found`;
+        
+        document.getElementById('prevBtn').disabled = page <= 1;
+        document.getElementById('nextBtn').disabled = page >= json.pagination.total_pages;
+
+        if (!json.data.length) {
+          tbody.innerHTML = '<tr><td colspan="6" class="muted" style="text-align:center">No short links mapped yet.</td></tr>';
+          return;
+        }
+
         tbody.innerHTML = json.data.map(row => `
           <tr>
-            <td>${row.id}</td>
-            <td><strong>/${row.slug}</strong>${row.title ? `<div class="muted">${trunc(row.title,40)}</div>` : ''}</td>
-            <td><a href="${row.url}" target="_blank" rel="noreferrer">${trunc(row.url,56)}</a></td>
+            <td><strong>/${row.slug}</strong>${row.title ? `<div class="muted">${truncateStr(row.title, 35)}</div>` : ''}</td>
+            <td><a href="${row.url}" target="_blank" rel="noreferrer">${truncateStr(row.url, 45)}</a></td>
             <td>${row.clicks}</td>
-            <td class="muted">${fmt(row.created_at)}</td>
-            <td class="muted">${fmt(row.last_clicked)}</td>
-            <td class="actions">
-              <button data-copy="${row.short_url}">Copy</button>
-              <button data-stats="${row.slug}">Stats</button>
-              <button data-qr="${row.slug}">QR</button>
-              <button data-edit='${JSON.stringify(row).replace(/'/g, "&#39;")}'>Edit</button>
-              <button class="danger" data-del="${row.id}" data-slug="${row.slug}">Delete</button>
+            <td>${fmtDate(row.created_at)}</td>
+            <td><span class="muted">${row.redirect_type}</span></td>
+            <td>
+              <div class="actions">
+                <button onclick="copyLink('${row.short_url}')" style="padding:4px 8px;font-size:0.75rem">Copy</button>
+                <button onclick="showStats('${row.slug}')" style="padding:4px 8px;font-size:0.75rem">Stats</button>
+                <button onclick="showQr('${row.slug}')" style="padding:4px 8px;font-size:0.75rem">QR</button>
+                <button onclick="editLink(${row.id}, '${row.url}', '${row.slug}', '${row.title||''}', ${row.redirect_type}, '${row.expires_at||''}')" style="padding:4px 8px;font-size:0.75rem">Edit</button>
+                <button class="danger" onclick="deleteLink(${row.id})" style="padding:4px 8px;font-size:0.75rem">Delete</button>
+              </div>
             </td>
-          </tr>`).join('');
+          </tr>
+        `).join('');
+      } catch (err) {
+        showToast("Error loading links: " + err.message, true);
       }
-      const p = json.pagination;
-      document.getElementById('rangeLabel').textContent = p.total ? `${(p.page-1)*p.limit+1}–${Math.min(p.page*p.limit,p.total)} of ${p.total}` : '0 links';
-      document.getElementById('pageLabel').textContent = `Page ${p.page} / ${p.totalPages}`;
-      document.getElementById('prevBtn').disabled = p.page <= 1;
-      document.getElementById('nextBtn').disabled = p.page >= p.totalPages;
-      state.totalPages = p.totalPages;
     }
 
+    // Public shorteners creation
     document.getElementById('createForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       try {
-        const body = {
-          url: document.getElementById('url').value,
-          slug: document.getElementById('slug').value || undefined,
-          title: document.getElementById('title').value || undefined,
-          redirect_type: Number(document.getElementById('redirectType').value)
-        };
-        const json = await api('/api/links', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
-        toast('Created /' + json.data.slug);
-        e.target.reset();
-        await Promise.all([loadLinks(1), loadStats()]);
-      } catch (err) { toast(err.message, true); }
-    });
-
-    document.getElementById('searchForm').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      state.search = document.getElementById('search').value.trim();
-      await loadLinks(1);
-    });
-    document.getElementById('prevBtn').onclick = () => loadLinks(state.page - 1);
-    document.getElementById('nextBtn').onclick = () => loadLinks(state.page + 1);
-
-    document.getElementById('tbody').addEventListener('click', async (e) => {
-      const t = e.target;
-      if (!(t instanceof HTMLElement)) return;
-      if (t.dataset.copy) {
-        await navigator.clipboard.writeText(t.dataset.copy);
-        toast('Copied');
-      } else if (t.dataset.del) {
-        if (!confirm('Delete /' + t.dataset.slug + '?')) return;
-        try {
-          await api('/api/links/' + t.dataset.del, { method:'DELETE' });
-          toast('Deleted');
-          await Promise.all([loadLinks(state.page), loadStats()]);
-        } catch (err) { toast(err.message, true); }
-      } else if (t.dataset.stats) {
-        try {
-          const s = await api('/api/stats/' + encodeURIComponent(t.dataset.stats));
-          document.getElementById('statsTitle').textContent = 'Analytics · /' + s.slug;
-          if (state.detailChart) state.detailChart.destroy();
-          state.detailChart = new Chart(document.getElementById('detailChart'), {
-            type:'bar',
-            data:{ labels:(s.clicks_by_date||[]).map(d=>d.date.slice(5)), datasets:[{ data:(s.clicks_by_date||[]).map(d=>d.clicks), backgroundColor:'rgba(14,165,233,.65)', borderRadius:6 }] },
-            options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{ display:false } }, scales:{ y:{ beginAtZero:true } } }
-          });
-          document.getElementById('byCountry').innerHTML = (s.clicks_by_country||[]).map(c => `<div>${c.country}: <b>${c.count}</b></div>`).join('') || 'No data';
-          document.getElementById('recent').innerHTML = (s.recent_clicks||[]).slice(0,8).map(c => `<div>${fmt(c.timestamp)} · ${c.country||'??'}</div>`).join('') || 'No data';
-          document.getElementById('statsDlg').showModal();
-        } catch (err) { toast(err.message, true); }
-      } else if (t.dataset.qr) {
-        try {
-          const q = await api('/api/qr/' + encodeURIComponent(t.dataset.qr));
-          document.getElementById('qrTitle').textContent = 'QR · /' + q.slug;
-          document.getElementById('qrImg').src = q.qr_url;
-          document.getElementById('qrDlg').showModal();
-        } catch (err) { toast(err.message, true); }
-      } else if (t.dataset.edit) {
-        const row = JSON.parse(t.dataset.edit);
-        document.getElementById('editId').value = row.id;
-        document.getElementById('editUrl').value = row.url;
-        document.getElementById('editSlug').value = row.slug;
-        document.getElementById('editTitle').value = row.title || '';
-        document.getElementById('editRedirect').value = String(row.redirect_type || 302);
-        document.getElementById('editActive').checked = !!row.is_active;
-        document.getElementById('editDlg').showModal();
+        await api('/api/links', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: document.getElementById('url').value,
+            slug: document.getElementById('slug').value,
+            title: document.getElementById('title').value,
+            redirect_type: parseInt(document.getElementById('redirectType').value),
+            expires_at: document.getElementById('expiresAt').value || null,
+            password: document.getElementById('linkPassword').value || null
+          })
+        });
+        showToast("Short link created successfully!");
+        document.getElementById('createForm').reset();
+        loadAllData();
+      } catch (err) {
+        showToast(err.message, true);
       }
     });
 
-    document.getElementById('editCancel').onclick = () => document.getElementById('editDlg').close();
-    document.getElementById('statsClose').onclick = () => document.getElementById('statsDlg').close();
-    document.getElementById('qrClose').onclick = () => document.getElementById('qrDlg').close();
+    // Clipboard copy
+    window.copyLink = function(url) {
+      navigator.clipboard.writeText(url);
+      showToast("Link copied to clipboard!");
+    }
 
+    // QR dialog
+    window.showQr = function(slug) {
+      document.getElementById('qrImg').src = `/api/qr/${slug}`;
+      document.getElementById('qrDlg').showModal();
+    }
+    document.getElementById('qrClose').addEventListener('click', () => document.getElementById('qrDlg').close());
+
+    // Link delete
+    window.deleteLink = async function(id) {
+      if (!confirm("Are you sure you want to delete this link?")) return;
+      try {
+        await api(`/api/links/${id}`, { method: 'DELETE' });
+        showToast("Link deleted");
+        loadAllData();
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    }
+
+    // Edit link
+    window.editLink = function(id, url, slug, title, redirect, expires) {
+      document.getElementById('editId').value = id;
+      document.getElementById('editUrl').value = url;
+      document.getElementById('editTitle').value = title;
+      document.getElementById('editRedirect').value = redirect;
+      document.getElementById('editExpires').value = expires ? expires.slice(0, 16) : '';
+      document.getElementById('editPassword').value = '';
+      document.getElementById('editDlg').showModal();
+    }
+    document.getElementById('editCancel').addEventListener('click', () => document.getElementById('editDlg').close());
+    
     document.getElementById('editForm').addEventListener('submit', async (e) => {
       e.preventDefault();
+      const id = document.getElementById('editId').value;
       try {
-        const id = document.getElementById('editId').value;
-        await api('/api/links/' + id, {
-          method:'PUT',
-          headers:{'Content-Type':'application/json'},
+        await api(`/api/links/${id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             url: document.getElementById('editUrl').value,
-            slug: document.getElementById('editSlug').value,
             title: document.getElementById('editTitle').value,
-            redirect_type: Number(document.getElementById('editRedirect').value),
-            is_active: document.getElementById('editActive').checked
+            redirect_type: parseInt(document.getElementById('editRedirect').value),
+            expires_at: document.getElementById('editExpires').value || null,
+            password: document.getElementById('editPassword').value || undefined
           })
         });
+        showToast("Link updated successfully");
         document.getElementById('editDlg').close();
-        toast('Updated');
-        await loadLinks(state.page);
-      } catch (err) { toast(err.message, true); }
+        loadAllData();
+      } catch (err) {
+        showToast(err.message, true);
+      }
     });
 
-    Promise.all([loadLinks(1), loadStats()]).catch(err => toast(err.message, true));
+    // Stats detail
+    window.showStats = async function(slug) {
+      try {
+        const json = await api(`/api/stats/${slug}`);
+        document.getElementById('statsTitle').textContent = `Analytics: /${slug}`;
+        
+        // Render country list
+        const countryDiv = document.getElementById('byCountry');
+        if (json.clicks_by_country.length === 0) {
+          countryDiv.textContent = 'No country stats recorded.';
+        } else {
+          countryDiv.innerHTML = json.clicks_by_country.map(c => `
+            <div style="display:flex;justify-content:space-between;padding:4px 0">
+              <span>${c.country}</span>
+              <b>${c.count} clicks</b>
+            </div>
+          `).join('');
+        }
+
+        // Render recent activity table
+        const clicksTbody = document.getElementById('recentClicksTbody');
+        if (json.recent_clicks.length === 0) {
+          clicksTbody.innerHTML = '<tr><td colspan="3" class="muted">No clicks recorded.</td></tr>';
+        } else {
+          clicksTbody.innerHTML = json.recent_clicks.map(click => `
+            <tr>
+              <td>${new Date(click.timestamp).toLocaleString()}</td>
+              <td>${truncateStr(click.referrer || 'Direct / None', 24)}</td>
+              <td>${click.country}</td>
+            </tr>
+          `).join('');
+        }
+
+        document.getElementById('statsDlg').showModal();
+      } catch (err) {
+        showToast("Stats loading failed: " + err.message, true);
+      }
+    }
+    document.getElementById('statsClose').addEventListener('click', () => document.getElementById('statsDlg').close());
+
+    // Search and Pagination
+    document.getElementById('searchForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      state.search = document.getElementById('search').value;
+      loadLinks(1);
+    });
+
+    document.getElementById('prevBtn').addEventListener('click', () => loadLinks(state.page - 1));
+    document.getElementById('nextBtn').addEventListener('click', () => loadLinks(state.page + 1));
+
+    // TAB 2 DATA MANAGEMENT
+    async function loadBlocklist() {
+      try {
+        const res = await api('/api/admin/blocked-ips');
+        const tbody = document.getElementById('blocklistTbody');
+        if (res.data.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="4" class="muted">No blocked IP networks.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = res.data.map(block => `
+          <tr>
+            <td><code>${block.ip_hash}</code></td>
+            <td>${block.reason}</td>
+            <td>${fmtDate(block.created_at)}</td>
+            <td><button class="danger" style="padding:4px 8px;font-size:0.75rem" onclick="unblockIp(${block.id})">Delete</button></td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    }
+
+    document.getElementById('blockForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        await api('/api/admin/blocked-ips', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ip_hash: document.getElementById('blockIpHash').value,
+            reason: document.getElementById('blockReason').value
+          })
+        });
+        showToast("IP Hash blocked successfully");
+        document.getElementById('blockForm').reset();
+        loadBlocklist();
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    });
+
+    window.unblockIp = async function(id) {
+      try {
+        await api(`/api/admin/blocked-ips/${id}`, { method: 'DELETE' });
+        showToast("IP Hash unblocked");
+        loadBlocklist();
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    }
+
+    async function loadAuditLogs() {
+      try {
+        const res = await api('/api/admin/audit-log');
+        const tbody = document.getElementById('auditLogsTbody');
+        if (res.data.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="4" class="muted">No audit logs stored.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = res.data.map(log => `
+          <tr>
+            <td><code>${log.actor_type}</code></td>
+            <td><strong>${log.action}</strong></td>
+            <td>${log.target_type} (${log.target_id})</td>
+            <td>${fmtDate(log.created_at)}</td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    }
+
+    // Startup Session Check
+    checkSession();
   </script>
 </body>
 </html>
