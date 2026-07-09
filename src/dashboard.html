@@ -116,6 +116,10 @@
             <span>Custom Slug / Alias (Optional)</span>
             <input type="text" id="publicSlug" placeholder="e.g. promo-2026" />
           </label>
+          <div style="margin-bottom:12px;display:flex;align-items:center;gap:6px">
+            <input type="checkbox" id="publicHashSlug" checked style="width:auto;margin:0" />
+            <span style="font-size:0.85rem;color:var(--muted)">Hash Custom Slug (Privacy Mode)</span>
+          </div>
           <label>
             <span>CAPTCHA Verification</span>
             <div class="captcha-box">
@@ -232,6 +236,10 @@
                 <span>Custom Slug / Alias (Optional)</span>
                 <input id="slug" placeholder="e.g. promo" />
               </label>
+              <div style="margin-bottom:12px;display:flex;align-items:center;gap:6px">
+                <input type="checkbox" id="hashSlug" checked style="width:auto;margin:0" />
+                <span style="font-size:0.85rem;color:var(--muted)">Hash Custom Slug (Privacy Mode)</span>
+              </div>
               <label>
                 <span>Title / Description</span>
                 <input id="title" placeholder="Internal label" />
@@ -553,6 +561,7 @@
           body: JSON.stringify({
             url: document.getElementById('publicUrl').value,
             slug: document.getElementById('publicSlug').value,
+            hash_slug: document.getElementById('publicHashSlug').checked,
             captcha_token: document.getElementById('publicCaptchaToken').value,
             captcha_answer: document.getElementById('publicCaptchaA').value
           })
@@ -771,6 +780,7 @@
           body: JSON.stringify({
             url: document.getElementById('url').value,
             slug: document.getElementById('slug').value,
+            hash_slug: document.getElementById('hashSlug').checked,
             title: document.getElementById('title').value,
             redirect_type: parseInt(document.getElementById('redirectType').value),
             expires_at: document.getElementById('expiresAt').value || null,
