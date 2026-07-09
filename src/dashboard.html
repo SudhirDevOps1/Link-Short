@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Shortly — URL Shortener Dashboard</title>
+  <title>Shortly — URL Shortener</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <style>
     :root {
@@ -27,7 +27,7 @@
     }
     .wrap { max-width: 1200px; margin: 0 auto; padding: 24px 16px 48px; }
     header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; border-bottom: 1px solid var(--line); padding-bottom: 16px; }
-    h1 { margin: 0; font-size: 1.8rem; display: flex; align-items: center; gap: 8px; }
+    h1 { margin: 0; font-size: 1.8rem; display: flex; align-items: center; gap: 8px; cursor: pointer; }
     h1 span { font-size: 0.8rem; background: var(--accent); color: #fff; padding: 2px 8px; border-radius: 99px; }
     
     .nav-tabs { display: flex; gap: 8px; margin-bottom: 24px; }
@@ -79,11 +79,19 @@
     
     .chart-box { height: 220px; position: relative; }
     
-    /* Login Page Centered form */
-    .login-container { display: flex; align-items: center; justify-content: center; min-height: 80vh; }
-    .login-card { width: 100%; max-width: 400px; background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 32px; }
+    /* Login & Register views */
+    .auth-container { display: flex; align-items: center; justify-content: center; min-height: 80vh; }
+    .auth-card { width: 100%; max-width: 400px; background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 32px; }
+    .auth-toggle { display: flex; gap: 10px; margin-bottom: 20px; border-bottom: 1px solid var(--line); padding-bottom: 12px; }
+    .auth-toggle button { flex: 1; border: none; background: transparent; color: var(--muted); font-weight: 600; padding: 6px; }
+    .auth-toggle button.active { color: var(--accent); border-bottom: 2px solid var(--accent); border-radius: 0; }
+    
     .captcha-box { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
-    .captcha-q { font-size: 1rem; font-weight: 600; color: var(--accent); background: #0b1220; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); flex-grow: 1; text-align: center; }
+    .captcha-q { font-size: 0.95rem; font-weight: 600; color: var(--accent); background: #0b1220; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); flex-grow: 1; text-align: center; }
+    
+    /* Public Shortener UI */
+    .public-container { max-width: 600px; margin: 60px auto 0; }
+    .public-result { background: rgba(16, 185, 129, 0.1); border: 1px dashed var(--success); border-radius: 12px; padding: 16px; margin-top: 20px; }
     
     .hidden { display: none !important; }
     .tabs-content { display: none; }
@@ -92,13 +100,57 @@
 </head>
 <body>
   <div class="wrap">
-    
-    <!-- LOGIN VIEW -->
-    <div id="loginView" class="login-container hidden">
-      <div class="login-card">
-        <h2 style="text-align:center;margin-bottom:8px">Shortly Admin</h2>
-        <p style="text-align:center;color:var(--muted);margin-top:0;font-size:0.85rem">Please authenticate to access dashboard</p>
+
+    <!-- PUBLIC VIEW (LANDING PAGE FOR GENERAL PUBLIC SHORTENING) -->
+    <div id="publicView" class="public-container hidden">
+      <div class="card">
+        <h2 style="text-align:center;font-size:1.6rem;margin-bottom:6px">Shortly URL Shortener</h2>
+        <p style="text-align:center;color:var(--muted);margin-top:0;font-size:0.85rem">Shorten any destination link instantly and securely</p>
+        
+        <form id="publicShortenForm">
+          <label>
+            <span>Destination URL *</span>
+            <input type="url" id="publicUrl" required placeholder="https://example.com/very/long/destination/path" />
+          </label>
+          <label>
+            <span>Custom Slug / Alias (Optional)</span>
+            <input type="text" id="publicSlug" placeholder="e.g. promo-2026" />
+          </label>
+          <label>
+            <span>CAPTCHA Verification</span>
+            <div class="captcha-box">
+              <span id="publicCaptchaQ" class="captcha-q">Loading captcha...</span>
+              <input type="text" id="publicCaptchaA" style="width:100px" required placeholder="Answer" />
+            </div>
+            <input type="hidden" id="publicCaptchaToken" />
+          </label>
+          <button class="primary" type="submit" style="width:100%;margin-top:12px">Shorten Link</button>
+        </form>
+
+        <div id="publicResultBox" class="public-result hidden">
+          <p style="margin:0 0 8px;font-weight:600;color:var(--success)">Your shortened link is ready!</p>
+          <div style="display:flex;gap:10px">
+            <input type="text" id="publicResultUrl" readonly style="flex-grow:1;background:#0b1220;border-color:var(--line)" />
+            <button type="button" class="primary" id="publicCopyBtn">Copy</button>
+          </div>
+        </div>
+      </div>
+      <div style="text-align:center;margin-top:24px">
+        <a href="/admin" class="muted">Go to Admin Dashboard Login →</a>
+      </div>
+    </div>
+
+    <!-- AUTHENTICATION VIEW (LOGIN & SIGN UP SPA) -->
+    <div id="authView" class="auth-container hidden">
+      <div class="auth-card">
+        <div class="auth-toggle">
+          <button id="toggleLoginBtn" class="active">Sign In</button>
+          <button id="toggleRegisterBtn">Sign Up (Register)</button>
+        </div>
+        
+        <!-- Login Form -->
         <form id="loginForm">
+          <h3 style="margin-top:0;margin-bottom:12px">Dashboard Login</h3>
           <label>
             <span>Username</span>
             <input type="text" id="loginUser" required placeholder="admin" autofocus />
@@ -116,14 +168,38 @@
             <input type="hidden" id="loginCaptchaToken" />
           </label>
           <button class="primary" type="submit" style="width:100%;margin-top:8px">Login</button>
+          <div style="text-align:center;margin-top:16px"><a href="/" class="muted">← Back to public shortener</a></div>
+        </form>
+
+        <!-- Register Form -->
+        <form id="registerForm" class="hidden">
+          <h3 style="margin-top:0;margin-bottom:12px">Create Account</h3>
+          <label>
+            <span>Username (alphanumeric, 3-20 chars)</span>
+            <input type="text" id="registerUser" required placeholder="newuser" />
+          </label>
+          <label>
+            <span>Password (min 5 chars)</span>
+            <input type="password" id="registerPass" required placeholder="••••••••" />
+          </label>
+          <label>
+            <span>CAPTCHA Verification</span>
+            <div class="captcha-box">
+              <span id="registerCaptchaQ" class="captcha-q">Loading...</span>
+              <input type="text" id="registerCaptchaA" style="width:100px" required placeholder="Answer" />
+            </div>
+            <input type="hidden" id="registerCaptchaToken" />
+          </label>
+          <button class="primary" type="submit" style="width:100%;margin-top:8px">Register Account</button>
+          <div style="text-align:center;margin-top:16px"><a href="/" class="muted">← Back to public shortener</a></div>
         </form>
       </div>
     </div>
 
-    <!-- MAIN APP VIEW -->
+    <!-- MAIN APP DASHBOARD VIEW -->
     <div id="appView" class="hidden">
       <header>
-        <h1>Shortly <span>Admin Portal</span></h1>
+        <h1 onclick="window.location.href='/'">Shortly <span>SaaS Console</span></h1>
         <div style="display:flex;align-items:center;gap:12px">
           <span class="muted" id="userDisplay">Welcome</span>
           <button id="logoutBtn" class="danger" style="padding:6px 12px;font-size:0.8rem">Logout</button>
@@ -131,34 +207,34 @@
       </header>
 
       <div class="nav-tabs">
-        <button class="tab-btn active" data-tab="linksTab">Links & stats</button>
-        <button class="tab-btn" data-tab="securityTab">Security & Blocks</button>
-        <button class="tab-btn" data-tab="settingsTab">Settings</button>
+        <button class="tab-btn active" data-tab="linksTab">Links & Analytics</button>
+        <button class="tab-btn hidden" id="navSecurityTab" data-tab="securityTab">Security Logs & Blocks</button>
+        <button class="tab-btn" data-tab="settingsTab">Profile Settings</button>
       </div>
 
       <!-- TAB 1: LINKS AND STATS -->
       <div id="linksTab" class="tabs-content active">
         <div class="stats-bar">
-          <div class="stat-card"><span>Total Links</span><b id="statLinks">—</b></div>
-          <div class="stat-card"><span>Total Clicks</span><b id="statClicks">—</b></div>
-          <div class="stat-card"><span>7-Day clicks</span><b id="statWeek">—</b></div>
+          <div class="stat-card"><span>My Total Links</span><b id="statLinks">—</b></div>
+          <div class="stat-card"><span>My Total Clicks</span><b id="statClicks">—</b></div>
+          <div class="stat-card"><span>Clicks last 7 days</span><b id="statWeek">—</b></div>
         </div>
 
         <div class="grid grid-2">
           <section class="card">
-            <h2>Create New Link</h2>
+            <h2>Shorten Link (Secure Rest-Encryption)</h2>
             <form id="createForm">
               <label>
                 <span>Destination URL *</span>
                 <input id="url" type="url" required placeholder="https://example.com/long/path" />
               </label>
               <label>
-                <span>Custom Alias/Slug (Optional)</span>
+                <span>Custom Slug / Alias (Optional)</span>
                 <input id="slug" placeholder="e.g. promo" />
               </label>
               <label>
                 <span>Title / Description</span>
-                <input id="title" placeholder="Internal name" />
+                <input id="title" placeholder="Internal label" />
               </label>
               <div class="grid" style="grid-template-columns:1fr 1fr;gap:8px">
                 <label>
@@ -169,7 +245,7 @@
                   </select>
                 </label>
                 <label>
-                  <span>Expiration date</span>
+                  <span>Link Expiration Date</span>
                   <input id="expiresAt" type="datetime-local" />
                 </label>
               </div>
@@ -182,7 +258,7 @@
           </section>
 
           <section class="card">
-            <h2 style="margin-bottom:8px">Analytics · 7 days</h2>
+            <h2 style="margin-bottom:8px">Link Clicks Graph</h2>
             <div class="chart-box">
               <canvas id="overviewChart"></canvas>
             </div>
@@ -193,11 +269,11 @@
         <section class="card" style="margin-top:16px">
           <div class="row-flex">
             <div>
-              <h2 style="margin:0">Active Links</h2>
+              <h2 style="margin:0">Links Catalog</h2>
               <div class="muted" id="rangeLabel">0 links</div>
             </div>
             <form id="searchForm" style="display:flex;gap:8px;margin:0">
-              <input id="search" placeholder="Search slug or URL…" style="min-width:200px;padding:8px 12px" />
+              <input id="search" placeholder="Search slug or title…" style="min-width:200px;padding:8px 12px" />
               <button type="submit" style="padding:8px 12px">Search</button>
             </form>
           </div>
@@ -219,11 +295,11 @@
         </section>
       </div>
 
-      <!-- TAB 2: SECURITY & BLOCKS -->
+      <!-- TAB 2: SECURITY & BLOCKS (ADMIN ONLY) -->
       <div id="securityTab" class="tabs-content">
         <div class="grid grid-2">
           <section class="card">
-            <h2>IP Blocklist Management</h2>
+            <h2>IP Blocklist Configuration</h2>
             <form id="blockForm" style="margin-bottom:20px">
               <label>
                 <span>IP Address SHA-256 Hash</span>
@@ -231,7 +307,7 @@
               </label>
               <label>
                 <span>Reason</span>
-                <input id="blockReason" required placeholder="e.g. Brute force attempts" />
+                <input id="blockReason" required placeholder="e.g. Abuse/botting" />
               </label>
               <button class="primary" type="submit">Block IP Hash</button>
             </form>
@@ -248,7 +324,7 @@
           </section>
 
           <section class="card">
-            <h2>Live Audit Logs</h2>
+            <h2>System Audit Trails</h2>
             <div style="overflow-y:auto;max-height:500px">
               <table>
                 <thead>
@@ -256,7 +332,7 @@
                     <th>Actor</th><th>Action</th><th>Target</th><th>Timestamp</th>
                   </tr>
                 </thead>
-                <tbody id="auditLogsTbody"><tr><td colspan="4" class="muted">Loading audit logs...</td></tr></tbody>
+                <tbody id="auditLogsTbody"><tr><td colspan="4" class="muted">Loading logs...</td></tr></tbody>
               </table>
             </div>
           </section>
@@ -266,7 +342,7 @@
       <!-- TAB 3: SETTINGS -->
       <div id="settingsTab" class="tabs-content">
         <section class="card" style="max-width:500px">
-          <h2>Change Admin Password</h2>
+          <h2>Update Dashboard Password</h2>
           <form id="changePasswordForm">
             <label>
               <span>New Password</span>
@@ -286,38 +362,38 @@
 
   <!-- EDIT DIALOG -->
   <dialog id="editDlg"><div class="dlg">
-    <div class="dlg-header"><h3>Edit Link Parameters</h3><button type="button" id="editCancel" style="padding:4px 8px;font-size:0.8rem">✕</button></div>
+    <div class="dlg-header"><h3>Update Link Settings</h3><button type="button" id="editCancel" style="padding:4px 8px;font-size:0.8rem">✕</button></div>
     <form id="editForm">
       <input type="hidden" id="editId" />
       <label><span>Destination URL</span><input id="editUrl" type="url" required /></label>
       <label><span>Title/Description</span><input id="editTitle" /></label>
       <div class="grid" style="grid-template-columns:1fr 1fr;gap:8px">
         <label>
-          <span>Redirect Type</span>
+          <span>Redirect Mode</span>
           <select id="editRedirect">
-            <option value="302">302</option>
-            <option value="301">301</option>
+            <option value="302">302 (Temporary)</option>
+            <option value="301">301 (Permanent)</option>
           </select>
         </label>
         <label><span>Expiration Date</span><input id="editExpires" type="datetime-local" /></label>
       </div>
       <label><span>Update Link Password</span><input id="editPassword" type="password" placeholder="Leave blank to keep existing password" /></label>
       <div class="row-flex" style="justify-content:flex-end;margin-top:16px">
-        <button class="primary" type="submit">Save Updates</button>
+        <button class="primary" type="submit">Save Changes</button>
       </div>
     </form>
   </div></dialog>
 
   <!-- STATS DIALOG -->
   <dialog id="statsDlg"><div class="dlg">
-    <div class="dlg-header"><h3 id="statsTitle">Link Analytics</h3><button type="button" id="statsClose" style="padding:4px 8px">✕</button></div>
+    <div class="dlg-header"><h3 id="statsTitle">Analytics Data</h3><button type="button" id="statsClose" style="padding:4px 8px">✕</button></div>
     <div class="grid">
       <div>
         <h4 style="margin:0 0 8px">Clicks by Country</h4>
-        <div id="byCountry" class="muted">No data</div>
+        <div id="byCountry" class="muted">No statistics found</div>
       </div>
       <div>
-        <h4 style="margin:0 0 8px">Recent Clicks Activity</h4>
+        <h4 style="margin:0 0 8px">Recent Clicking Events</h4>
         <div style="overflow-x:auto">
           <table>
             <thead><tr><th>Time</th><th>Referrer</th><th>Country</th></tr></thead>
@@ -330,14 +406,14 @@
 
   <!-- QR DIALOG -->
   <dialog id="qrDlg"><div class="dlg" style="text-align:center">
-    <div class="dlg-header"><h3>Link QR Code</h3><button type="button" id="qrClose" style="padding:4px 8px">✕</button></div>
+    <div class="dlg-header"><h3>QR Code</h3><button type="button" id="qrClose" style="padding:4px 8px">✕</button></div>
     <img id="qrImg" alt="QR Code" width="260" height="260" style="background:#fff;border-radius:12px;padding:12px;margin:12px auto;display:block" />
   </div></dialog>
 
   <div class="toast" id="toast"></div>
 
   <script>
-    const state = { page: 1, search: '', overviewChart: null, currentTab: 'linksTab' };
+    const state = { page: 1, search: '', overviewChart: null, currentTab: 'linksTab', role: 'user' };
 
     function showToast(msg, err=false) {
       const el = document.getElementById('toast');
@@ -351,8 +427,8 @@
       const res = await fetch(path, opts);
       const json = await res.json().catch(() => ({}));
       if (!res.ok || json.success === false) {
-        if (res.status === 401) {
-          checkSession(); // Trigger redirect to login
+        if (res.status === 401 && window.location.pathname === '/admin') {
+          checkSession(); // Redirect logic
         }
         throw new Error(json.error || res.statusText);
       }
@@ -367,40 +443,130 @@
       return !s ? '' : (s.length > n ? s.slice(0, n-1)+'…' : s);
     }
 
-    // Auth verification
+    // Routing Logic to see whether it is Public Shortener Page or Dashboard Admin Page
+    function routeApp() {
+      const path = window.location.pathname;
+      if (path === '/admin') {
+        checkSession();
+      } else {
+        // Public view
+        document.getElementById('appView').classList.add('hidden');
+        document.getElementById('authView').classList.add('hidden');
+        document.getElementById('publicView').classList.remove('hidden');
+        loadPublicCaptcha();
+      }
+    }
+
+    // Session validation
     async function checkSession() {
       try {
         const res = await api('/api/auth/me');
         if (res.authenticated) {
-          document.getElementById('loginView').classList.add('hidden');
+          document.getElementById('authView').classList.add('hidden');
+          document.getElementById('publicView').classList.add('hidden');
           document.getElementById('appView').classList.remove('hidden');
           document.getElementById('userDisplay').textContent = `Logged in as ${res.username}`;
+          
+          // Verify role to show or hide security logs
+          if (res.username === 'admin') {
+            state.role = 'admin';
+            document.getElementById('navSecurityTab').classList.remove('hidden');
+          } else {
+            state.role = 'user';
+            document.getElementById('navSecurityTab').classList.add('hidden');
+          }
+          
           loadAllData();
         } else {
           document.getElementById('appView').classList.add('hidden');
-          document.getElementById('loginView').classList.remove('hidden');
-          loadCaptcha();
+          document.getElementById('publicView').classList.add('hidden');
+          document.getElementById('authView').classList.remove('hidden');
+          loadAuthCaptcha();
         }
       } catch (err) {
         document.getElementById('appView').classList.add('hidden');
-        document.getElementById('loginView').classList.remove('hidden');
-        loadCaptcha();
+        document.getElementById('publicView').classList.add('hidden');
+        document.getElementById('authView').classList.remove('hidden');
+        loadAuthCaptcha();
       }
     }
 
-    // CAPTCHA loading
-    async function loadCaptcha() {
+    // CAPTCHA helpers
+    async function loadPublicCaptcha() {
+      try {
+        const res = await api('/api/captcha');
+        document.getElementById('publicCaptchaQ').textContent = res.question;
+        document.getElementById('publicCaptchaToken').value = res.token;
+        document.getElementById('publicCaptchaA').value = '';
+      } catch (err) {
+        showToast("Error loading CAPTCHA", true);
+      }
+    }
+
+    async function loadAuthCaptcha() {
       try {
         const res = await api('/api/captcha');
         document.getElementById('loginCaptchaQ').textContent = res.question;
         document.getElementById('loginCaptchaToken').value = res.token;
         document.getElementById('loginCaptchaA').value = '';
+        
+        document.getElementById('registerCaptchaQ').textContent = res.question;
+        document.getElementById('registerCaptchaToken').value = res.token;
+        document.getElementById('registerCaptchaA').value = '';
       } catch (err) {
-        showToast("Error loading captcha", true);
+        showToast("Error loading CAPTCHA", true);
       }
     }
 
-    // Form handlers
+    // Toggle Sign In vs Sign Up
+    document.getElementById('toggleLoginBtn').addEventListener('click', () => {
+      document.getElementById('toggleLoginBtn').classList.add('active');
+      document.getElementById('toggleRegisterBtn').classList.remove('active');
+      document.getElementById('loginForm').classList.remove('hidden');
+      document.getElementById('registerForm').classList.add('hidden');
+      loadAuthCaptcha();
+    });
+
+    document.getElementById('toggleRegisterBtn').addEventListener('click', () => {
+      document.getElementById('toggleRegisterBtn').classList.add('active');
+      document.getElementById('toggleLoginBtn').classList.remove('active');
+      document.getElementById('registerForm').classList.remove('hidden');
+      document.getElementById('loginForm').classList.add('hidden');
+      loadAuthCaptcha();
+    });
+
+    // Public shortening submission
+    document.getElementById('publicShortenForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        const res = await api('/api/shorten', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: document.getElementById('publicUrl').value,
+            slug: document.getElementById('publicSlug').value,
+            captcha_token: document.getElementById('publicCaptchaToken').value,
+            captcha_answer: document.getElementById('publicCaptchaA').value
+          })
+        });
+        showToast("Link shortened successfully!");
+        document.getElementById('publicResultBox').classList.remove('hidden');
+        document.getElementById('publicResultUrl').value = res.data.short_url;
+        document.getElementById('publicShortenForm').reset();
+        loadPublicCaptcha();
+      } catch (err) {
+        showToast(err.message, true);
+        loadPublicCaptcha();
+      }
+    });
+
+    document.getElementById('publicCopyBtn').addEventListener('click', () => {
+      const url = document.getElementById('publicResultUrl').value;
+      navigator.clipboard.writeText(url);
+      showToast("Link copied!");
+    });
+
+    // Authentication form submissions
     document.getElementById('loginForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       try {
@@ -418,21 +584,42 @@
         checkSession();
       } catch (err) {
         showToast(err.message, true);
-        loadCaptcha();
+        loadAuthCaptcha();
+      }
+    });
+
+    document.getElementById('registerForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        const res = await api('/api/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: document.getElementById('registerUser').value,
+            password: document.getElementById('registerPass').value,
+            captcha_token: document.getElementById('registerCaptchaToken').value,
+            captcha_answer: document.getElementById('registerCaptchaA').value
+          })
+        });
+        showToast(res.message || "Registration successful! Please login.");
+        document.getElementById('toggleLoginBtn').click();
+      } catch (err) {
+        showToast(err.message, true);
+        loadAuthCaptcha();
       }
     });
 
     document.getElementById('logoutBtn').addEventListener('click', async () => {
       try {
         await api('/api/auth/logout', { method: 'POST' });
-        showToast("Logged out");
+        showToast("Logged out successfully");
         checkSession();
       } catch (err) {
         showToast(err.message, true);
       }
     });
 
-    // Change Password
+    // Password Update
     document.getElementById('changePasswordForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       const p1 = document.getElementById('newPassword').value;
@@ -455,7 +642,7 @@
       }
     });
 
-    // Tab Switching
+    // Navigation Tabs
     document.querySelectorAll('.tab-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -473,7 +660,7 @@
       if (tabId === 'linksTab') {
         loadStats();
         loadLinks(state.page);
-      } else if (tabId === 'securityTab') {
+      } else if (tabId === 'securityTab' && state.role === 'admin') {
         loadBlocklist();
         loadAuditLogs();
       }
@@ -483,7 +670,7 @@
       loadTabContent(state.currentTab);
     }
 
-    // Stats chart
+    // Stats charts
     async function loadStats() {
       try {
         const s = await api('/api/stats');
@@ -519,11 +706,11 @@
           }
         });
       } catch (err) {
-        showToast("Error loading stats: " + err.message, true);
+        showToast("Error loading statistics: " + err.message, true);
       }
     }
 
-    // Links list
+    // Links load
     async function loadLinks(page = 1) {
       state.page = page;
       const q = new URLSearchParams({ page: String(page), limit: '10' });
@@ -539,7 +726,7 @@
         document.getElementById('nextBtn').disabled = page >= json.pagination.total_pages;
 
         if (!json.data.length) {
-          tbody.innerHTML = '<tr><td colspan="6" class="muted" style="text-align:center">No short links mapped yet.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="6" class="muted" style="text-align:center">No links mapped.</td></tr>';
           return;
         }
 
@@ -566,7 +753,7 @@
       }
     }
 
-    // Public shorteners creation
+    // Dashboard Creation
     document.getElementById('createForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       try {
@@ -590,20 +777,17 @@
       }
     });
 
-    // Clipboard copy
     window.copyLink = function(url) {
       navigator.clipboard.writeText(url);
       showToast("Link copied to clipboard!");
     }
 
-    // QR dialog
     window.showQr = function(slug) {
       document.getElementById('qrImg').src = `/api/qr/${slug}`;
       document.getElementById('qrDlg').showModal();
     }
     document.getElementById('qrClose').addEventListener('click', () => document.getElementById('qrDlg').close());
 
-    // Link delete
     window.deleteLink = async function(id) {
       if (!confirm("Are you sure you want to delete this link?")) return;
       try {
@@ -615,7 +799,6 @@
       }
     }
 
-    // Edit link
     window.editLink = function(id, url, slug, title, redirect, expires) {
       document.getElementById('editId').value = id;
       document.getElementById('editUrl').value = url;
@@ -650,16 +833,14 @@
       }
     });
 
-    // Stats detail
     window.showStats = async function(slug) {
       try {
         const json = await api(`/api/stats/${slug}`);
         document.getElementById('statsTitle').textContent = `Analytics: /${slug}`;
         
-        // Render country list
         const countryDiv = document.getElementById('byCountry');
         if (json.clicks_by_country.length === 0) {
-          countryDiv.textContent = 'No country stats recorded.';
+          countryDiv.textContent = 'No country clicks recorded.';
         } else {
           countryDiv.innerHTML = json.clicks_by_country.map(c => `
             <div style="display:flex;justify-content:space-between;padding:4px 0">
@@ -669,10 +850,9 @@
           `).join('');
         }
 
-        // Render recent activity table
         const clicksTbody = document.getElementById('recentClicksTbody');
         if (json.recent_clicks.length === 0) {
-          clicksTbody.innerHTML = '<tr><td colspan="3" class="muted">No clicks recorded.</td></tr>';
+          clicksTbody.innerHTML = '<tr><td colspan="3" class="muted">No clicks logged.</td></tr>';
         } else {
           clicksTbody.innerHTML = json.recent_clicks.map(click => `
             <tr>
@@ -690,7 +870,6 @@
     }
     document.getElementById('statsClose').addEventListener('click', () => document.getElementById('statsDlg').close());
 
-    // Search and Pagination
     document.getElementById('searchForm').addEventListener('submit', (e) => {
       e.preventDefault();
       state.search = document.getElementById('search').value;
@@ -700,7 +879,7 @@
     document.getElementById('prevBtn').addEventListener('click', () => loadLinks(state.page - 1));
     document.getElementById('nextBtn').addEventListener('click', () => loadLinks(state.page + 1));
 
-    // TAB 2 DATA MANAGEMENT
+    // Security tab logic (Admin only)
     async function loadBlocklist() {
       try {
         const res = await api('/api/admin/blocked-ips');
@@ -772,8 +951,8 @@
       }
     }
 
-    // Startup Session Check
-    checkSession();
+    // Startup routing check
+    routeApp();
   </script>
 </body>
 </html>

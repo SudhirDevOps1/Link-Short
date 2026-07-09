@@ -1,6 +1,6 @@
 /**
  * Cloudflare Workers URL Shortener
- * Stack: Hono + D1 (SQLite) + Web Crypto
+ * Stack: Hono + D1 (SQLite) + Web Crypto AES-GCM URL Encryption
  */
 
 import { Hono } from "hono";
@@ -10,8 +10,9 @@ import dashboardHtml from "./dashboard.html";
 
 const app = new Hono();
 
+// Global unhandled error boundary
 app.onError((err, c) => {
-  console.error("Global Error:", err);
+  console.error("Global Error Boundary:", err);
   return c.text(`Application Error: ${err.message}\nStack: ${err.stack}`, 500);
 });
 
@@ -77,6 +78,57 @@ async function hashPassword(password, salt = "shortly-system-salt-value") {
   );
   
   return btoa(String.fromCharCode(...new Uint8Array(derivedBits)));
+}
+
+// AES-GCM encryption/decryption using Web Crypto API
+async function getCryptoKey(secret) {
+  const encoder = new TextEncoder();
+  const rawKey = encoder.encode(secret.padEnd(32, '0').slice(0, 32)); // Normalize to 32 bytes key
+  return await crypto.subtle.importKey(
+    "raw",
+    rawKey,
+    { name: "AES-GCM" },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+
+async function encryptUrl(url, secret) {
+  try {
+    const key = await getCryptoKey(secret);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const encodedUrl = new TextEncoder().encode(url);
+    const ciphertext = await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv },
+      key,
+      encodedUrl
+    );
+    const ivBase64 = btoa(String.fromCharCode(...iv));
+    const ciphertextBase64 = btoa(String.fromCharCode(...new Uint8Array(ciphertext)));
+    return `${ivBase64}.${ciphertextBase64}`;
+  } catch (err) {
+    console.error("Encryption error:", err);
+    return url; // fallback to plain if failed
+  }
+}
+
+async function decryptUrl(encryptedStr, secret) {
+  try {
+    if (!encryptedStr || !encryptedStr.includes(".")) return encryptedStr; // fallback if not encrypted
+    const parts = encryptedStr.split(".");
+    const iv = Uint8Array.from(atob(parts[0]), c => c.charCodeAt(0));
+    const ciphertext = Uint8Array.from(atob(parts[1]), c => c.charCodeAt(0));
+    const key = await getCryptoKey(secret);
+    const decrypted = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv },
+      key,
+      ciphertext
+    );
+    return new TextDecoder().decode(decrypted);
+  } catch (err) {
+    console.error("Decryption error (check AUTH_SECRET consistency):", err.message);
+    return encryptedStr;
+  }
 }
 
 // Secure HMAC Session Cookie management
@@ -209,8 +261,8 @@ async function checkIpBlocklist(c, next) {
   await next();
 }
 
-// Admin Gating middleware
-async function requireAdmin(c, next) {
+// User Gating middleware (Enforces session and injects scoped role)
+async function requireAuthUser(c, next) {
   const secret = c.env.AUTH_SECRET || c.env.API_KEY || "fallback-secret-64-character-for-session-management";
   const token = getCookie(c, "session");
   const userSession = await verifySessionToken(token, secret);
@@ -219,7 +271,6 @@ async function requireAdmin(c, next) {
     return jsonError(c, "Unauthorized: Invalid or expired session", 401);
   }
   
-  // Verify against database
   const user = await c.env.DB.prepare(
     "SELECT * FROM users WHERE username = ? LIMIT 1"
   ).bind(userSession.username).first();
@@ -232,22 +283,34 @@ async function requireAdmin(c, next) {
   await next();
 }
 
+// Admin Gating middleware
+async function requireAdmin(c, next) {
+  await requireAuthUser(c, async () => {
+    const user = c.get("user");
+    if (user.role !== "admin") {
+      return jsonError(c, "Forbidden: Admin privileges required", 403);
+    }
+    await next();
+  });
+}
+
 // Bootstrap default user on first request
 async function ensureAdminUser(db, env) {
-  const user = await db.prepare("SELECT * FROM users WHERE username = 'admin' LIMIT 1").first();
+  const adminUser = env.ADMIN_USERNAME || "admin";
+  const user = await db.prepare("SELECT * FROM users WHERE username = ? LIMIT 1").bind(adminUser).first();
   const defaultPassword = env.ADMIN_PASSWORD || "admin";
   const hash = await hashPassword(defaultPassword);
   
   if (!user) {
-    console.log("ensureAdminUser - No admin found, bootstrapping with default password.");
+    console.log(`ensureAdminUser - No master admin '${adminUser}' found, bootstrapping...`);
     await db.prepare(
-      "INSERT INTO users (username, password_hash, role) VALUES ('admin', ?, 'admin')"
-    ).bind(hash).run();
+      "INSERT INTO users (username, password_hash, role) VALUES (?, ?, 'admin')"
+    ).bind(adminUser, hash).run();
   } else if (env.ADMIN_PASSWORD) {
-    console.log("ensureAdminUser - ADMIN_PASSWORD env override detected, updating database hash.");
+    console.log(`ensureAdminUser - ADMIN_PASSWORD env override detected, updating database hash for '${adminUser}'.`);
     await db.prepare(
-      "UPDATE users SET password_hash = ? WHERE username = 'admin'"
-    ).bind(hash).run();
+      "UPDATE users SET password_hash = ? WHERE username = ?"
+    ).bind(hash, adminUser).run();
   }
 }
 
@@ -262,8 +325,14 @@ app.use("*", async (c, next) => {
 });
 app.use("*", checkIpBlocklist);
 
-// GET / -> HTML dashboard (includes login + admin views in one SPA)
+// GET / -> Public shortener HTML dashboard
 app.get("/", async (c) => {
+  await ensureAdminUser(c.env.DB, c.env);
+  return c.html(dashboardHtml);
+});
+
+// GET /admin -> Admin Dashboard (requires session to see dashboard, otherwise login SPA handles it)
+app.get("/admin", async (c) => {
   await ensureAdminUser(c.env.DB, c.env);
   return c.html(dashboardHtml);
 });
@@ -273,6 +342,44 @@ app.get("/api/captcha", async (c) => {
   const secret = c.env.AUTH_SECRET || c.env.API_KEY || "captcha-signing-fallback-salt";
   const captcha = await generateCaptcha(secret);
   return c.json({ success: true, ...captcha });
+});
+
+// POST /api/auth/register (User sign up)
+app.post("/api/auth/register", async (c) => {
+  const secret = c.env.AUTH_SECRET || c.env.API_KEY || "captcha-signing-fallback-salt";
+  const body = await c.req.json().catch(() => null);
+  const ip = clientIp(c);
+  const ipHash = await hashIp(ip);
+  
+  if (!body?.username || !body?.password) {
+    return jsonError(c, "Username and password are required.");
+  }
+  
+  const username = body.username.trim().toLowerCase();
+  if (!/^[a-zA-Z0-9_-]{3,20}$/.test(username)) {
+    return jsonError(c, "Username must be alphanumeric (3-20 chars).");
+  }
+  if (body.password.length < 5) {
+    return jsonError(c, "Password must be at least 5 characters.");
+  }
+  
+  const captchaVerified = await verifyCaptcha(body.captcha_token, body.captcha_answer, secret);
+  if (!captchaVerified) {
+    return jsonError(c, "Invalid or expired CAPTCHA.");
+  }
+  
+  const exists = await c.env.DB.prepare("SELECT 1 FROM users WHERE username = ? LIMIT 1").bind(username).first();
+  if (exists) {
+    return jsonError(c, "Username is already registered.");
+  }
+  
+  const hash = await hashPassword(body.password);
+  await c.env.DB.prepare(
+    "INSERT INTO users (username, password_hash, role) VALUES (?, ?, 'user')"
+  ).bind(username, hash).run();
+  
+  await writeAuditLog(c.env.DB, "public", null, "register_user", "user", username, {}, ipHash);
+  return c.json({ success: true, message: "Registration successful. Please login." });
 });
 
 // POST /api/auth/login
@@ -286,7 +393,6 @@ app.post("/api/auth/login", async (c) => {
     return jsonError(c, "Username and password required");
   }
 
-  // Captcha validation
   const captchaVerified = await verifyCaptcha(body.captcha_token, body.captcha_answer, secret);
   if (!captchaVerified) {
     return jsonError(c, "Invalid or expired CAPTCHA answer.");
@@ -305,7 +411,6 @@ app.post("/api/auth/login", async (c) => {
     return jsonError(c, "Invalid credentials", 401);
   }
   
-  // Lockout check
   if (user.locked_until && new Date(user.locked_until) > new Date()) {
     return jsonError(c, `Account locked. Try again after ${new Date(user.locked_until).toLocaleTimeString()}`, 403);
   }
@@ -319,7 +424,7 @@ app.post("/api/auth/login", async (c) => {
     let lockedUntil = null;
     
     if (attempts >= 5) {
-      const lockDate = new Date(Date.now() + 15 * 60 * 1000); // 15 min lockout
+      const lockDate = new Date(Date.now() + 15 * 60 * 1000);
       lockedUntil = lockDate.toISOString();
       await c.env.DB.prepare(
         "UPDATE users SET failed_attempts = ?, locked_until = ? WHERE id = ?"
@@ -335,7 +440,6 @@ app.post("/api/auth/login", async (c) => {
     }
   }
   
-  // Successful Login
   await c.env.DB.prepare(
     "UPDATE users SET failed_attempts = 0, locked_until = NULL, last_login_at = ? WHERE id = ?"
   ).bind(new Date().toISOString(), user.id).run();
@@ -350,12 +454,11 @@ app.post("/api/auth/login", async (c) => {
   });
   
   await writeAuditLog(c.env.DB, "admin", user.id, "login_success", "user", user.username, {}, ipHash);
-  
   return c.json({ success: true, username: user.username });
 });
 
-// POST /api/auth/logout (Admin only)
-app.post("/api/auth/logout", requireAdmin, async (c) => {
+// POST /api/auth/logout (Authenticated user only)
+app.post("/api/auth/logout", requireAuthUser, async (c) => {
   const user = c.get("user");
   const ipHash = await hashIp(clientIp(c));
   deleteCookie(c, "session");
@@ -363,8 +466,8 @@ app.post("/api/auth/logout", requireAdmin, async (c) => {
   return c.json({ success: true });
 });
 
-// POST /api/auth/change-password (Admin only)
-app.post("/api/auth/change-password", requireAdmin, async (c) => {
+// POST /api/auth/change-password (Authenticated user only)
+app.post("/api/auth/change-password", requireAuthUser, async (c) => {
   const user = c.get("user");
   const body = await c.req.json().catch(() => null);
   const ipHash = await hashIp(clientIp(c));
@@ -381,8 +484,6 @@ app.post("/api/auth/change-password", requireAdmin, async (c) => {
   ).bind(newHash, newTokenVersion, user.id).run();
   
   await writeAuditLog(c.env.DB, "admin", user.id, "change_password", "user", user.username, {}, ipHash);
-  
-  // Clear local session cookie
   deleteCookie(c, "session");
   return c.json({ success: true, message: "Password updated successfully. Please login again." });
 });
@@ -396,7 +497,7 @@ app.get("/api/auth/me", async (c) => {
   return c.json({ authenticated: true, username: userSession.username });
 });
 
-// PUBLIC: POST /api/shorten -> Create link with CAPTCHA
+// PUBLIC: POST /api/shorten -> Create link anonymously (encrypted at rest)
 app.post("/api/shorten", async (c) => {
   const secret = c.env.AUTH_SECRET || c.env.API_KEY || "captcha-signing-fallback-salt";
   const body = await c.req.json().catch(() => null);
@@ -407,34 +508,27 @@ app.post("/api/shorten", async (c) => {
     return jsonError(c, "A valid URL starting with http:// or https:// is required");
   }
   
-  // CAPTCHA check
   const captchaVerified = await verifyCaptcha(body.captcha_token, body.captcha_answer, secret);
   if (!captchaVerified) {
     return jsonError(c, "Invalid or expired CAPTCHA answer.");
   }
   
-  // URL redirection loops protection
   const origin = (c.env.APP_URL || new URL(c.req.url).origin).replace(/\/$/, "");
   if (body.url.startsWith(origin)) {
     return jsonError(c, "Self-referencing redirection loops are blocked.");
   }
-  
-  // Check loop constraints / common extensions
   if (/\.(exe|dmg|msi|apk|bat|sh)$/i.test(body.url)) {
     return jsonError(c, "Executable redirects are blocked for safety.");
   }
   
   let slug = body.slug ? body.slug.trim() : "";
-  
   if (slug) {
     if (!/^[a-zA-Z0-9_-]{2,64}$/.test(slug)) {
       return jsonError(c, "Custom slug must be alphanumeric (2-64 chars)");
     }
-    // Check if slug exists
     const exists = await c.env.DB.prepare("SELECT 1 FROM links WHERE slug = ? LIMIT 1").bind(slug).first();
     if (exists) return jsonError(c, "Custom slug is already taken");
   } else {
-    // Generate random 6 char slug
     const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     let attempts = 0;
     while (attempts < 5) {
@@ -446,11 +540,14 @@ app.post("/api/shorten", async (c) => {
     }
   }
   
-  await c.env.DB.prepare(
-    "INSERT INTO links (slug, url, title, redirect_type, created_by_ip_hash) VALUES (?, ?, ?, 302, ?)"
-  ).bind(slug, body.url, body.title || "Public Link", ipHash).run();
+  // Encrypt destination URL
+  const encryptedUrl = await encryptUrl(body.url, secret);
   
-  await writeAuditLog(c.env.DB, "public", null, "create_link", "link", slug, { url: body.url }, ipHash);
+  await c.env.DB.prepare(
+    "INSERT INTO links (slug, url, title, redirect_type, created_by_ip_hash, user_id) VALUES (?, ?, ?, 302, ?, NULL)"
+  ).bind(slug, encryptedUrl, body.title || "Public Link", ipHash).run();
+  
+  await writeAuditLog(c.env.DB, "public", null, "create_link", "link", slug, { url: "[encrypted]" }, ipHash);
   
   return c.json({
     success: true,
@@ -463,8 +560,10 @@ app.post("/api/shorten", async (c) => {
   });
 });
 
-// ADMIN: GET /api/links (Paginated & Searchable list)
-app.get("/api/links", requireAdmin, async (c) => {
+// SCOPED: GET /api/links (Paginated & Searchable list, scoped by user_id)
+app.get("/api/links", requireAuthUser, async (c) => {
+  const user = c.get("user");
+  const secret = c.env.AUTH_SECRET || c.env.API_KEY || "fallback-secret-64-character-for-session-management";
   const query = c.req.query();
   const search = query.search ? `%${query.search}%` : "%";
   const limit = parseInt(query.limit) || 10;
@@ -472,19 +571,32 @@ app.get("/api/links", requireAdmin, async (c) => {
   const offset = (page - 1) * limit;
   const origin = (c.env.APP_URL || new URL(c.req.url).origin).replace(/\/$/, "");
   
-  const total = await c.env.DB.prepare(
-    "SELECT COUNT(*) as count FROM links WHERE (slug LIKE ? OR url LIKE ? OR title LIKE ?) AND is_active = 1"
-  ).bind(search, search, search).first();
+  let total, rows;
   
-  const rows = await c.env.DB.prepare(
-    "SELECT * FROM links WHERE (slug LIKE ? OR url LIKE ? OR title LIKE ?) AND is_active = 1 ORDER BY created_at DESC LIMIT ? OFFSET ?"
-  ).bind(search, search, search, limit, offset).all();
+  if (user.role === "admin") {
+    // Admin sees all links
+    total = await c.env.DB.prepare(
+      "SELECT COUNT(*) as count FROM links WHERE (slug LIKE ? OR title LIKE ?) AND is_active = 1"
+    ).bind(search, search).first();
+    rows = await c.env.DB.prepare(
+      "SELECT * FROM links WHERE (slug LIKE ? OR title LIKE ?) AND is_active = 1 ORDER BY created_at DESC LIMIT ? OFFSET ?"
+    ).bind(search, search, limit, offset).all();
+  } else {
+    // User sees only their links
+    total = await c.env.DB.prepare(
+      "SELECT COUNT(*) as count FROM links WHERE user_id = ? AND (slug LIKE ? OR title LIKE ?) AND is_active = 1"
+    ).bind(user.id, search, search).first();
+    rows = await c.env.DB.prepare(
+      "SELECT * FROM links WHERE user_id = ? AND (slug LIKE ? OR title LIKE ?) AND is_active = 1 ORDER BY created_at DESC LIMIT ? OFFSET ?"
+    ).bind(user.id, search, search, limit, offset).all();
+  }
   
-  const formatted = rows.results.map(row => ({
+  const formatted = await Promise.all(rows.results.map(async row => ({
     ...row,
+    url: await decryptUrl(row.url, secret),
     short_url: `${origin}/${row.slug}`,
     is_active: !!row.is_active
-  }));
+  })));
   
   return c.json({
     success: true,
@@ -498,9 +610,10 @@ app.get("/api/links", requireAdmin, async (c) => {
   });
 });
 
-// ADMIN: POST /api/links (Authenticated create)
-app.post("/api/links", requireAdmin, async (c) => {
+// SCOPED: POST /api/links (Authenticated link creation, associated with user_id)
+app.post("/api/links", requireAuthUser, async (c) => {
   const user = c.get("user");
+  const secret = c.env.AUTH_SECRET || c.env.API_KEY || "fallback-secret-64-character-for-session-management";
   const body = await c.req.json().catch(() => null);
   const ipHash = await hashIp(clientIp(c));
   
@@ -521,19 +634,23 @@ app.post("/api/links", requireAdmin, async (c) => {
     slug = [...bytes].map(b => alphabet[b % alphabet.length]).join("");
   }
   
+  // Encrypt destination URL
+  const encryptedUrl = await encryptUrl(body.url, secret);
+  
   await c.env.DB.prepare(
-    "INSERT INTO links (slug, url, title, expires_at, password, redirect_type, created_by_ip_hash) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    "INSERT INTO links (slug, url, title, expires_at, password, redirect_type, created_by_ip_hash, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
   ).bind(
     slug, 
-    body.url, 
+    encryptedUrl, 
     body.title || null, 
     body.expires_at || null, 
     body.password ? await hashPassword(body.password) : null,
     body.redirect_type || 302,
-    ipHash
+    ipHash,
+    user.id
   ).run();
   
-  await writeAuditLog(c.env.DB, "admin", user.id, "create_link", "link", slug, { url: body.url }, ipHash);
+  await writeAuditLog(c.env.DB, "user", user.id, "create_link", "link", slug, { url: "[encrypted]" }, ipHash);
   
   const origin = (c.env.APP_URL || new URL(c.req.url).origin).replace(/\/$/, "");
   return c.json({
@@ -542,15 +659,21 @@ app.post("/api/links", requireAdmin, async (c) => {
   });
 });
 
-// ADMIN: PUT /api/links/:id (Edit link)
-app.put("/api/links/:id", requireAdmin, async (c) => {
+// SCOPED: PUT /api/links/:id (Edit link, verifies ownership)
+app.put("/api/links/:id", requireAuthUser, async (c) => {
   const user = c.get("user");
+  const secret = c.env.AUTH_SECRET || c.env.API_KEY || "fallback-secret-64-character-for-session-management";
   const id = c.req.param("id");
   const body = await c.req.json().catch(() => null);
   const ipHash = await hashIp(clientIp(c));
   
   const link = await c.env.DB.prepare("SELECT * FROM links WHERE id = ? LIMIT 1").bind(id).first();
   if (!link) return jsonError(c, "Link not found", 404);
+  
+  // Verify ownership (unless admin)
+  if (user.role !== "admin" && link.user_id !== user.id) {
+    return jsonError(c, "Forbidden: Access denied", 403);
+  }
   
   if (!body?.url || !/^https?:\/\//i.test(body.url)) {
     return jsonError(c, "A valid URL is required");
@@ -561,10 +684,13 @@ app.put("/api/links/:id", requireAdmin, async (c) => {
     passwordHash = body.password ? await hashPassword(body.password) : null;
   }
   
+  // Encrypt destination URL
+  const encryptedUrl = await encryptUrl(body.url, secret);
+  
   await c.env.DB.prepare(
     "UPDATE links SET url = ?, title = ?, expires_at = ?, password = ?, redirect_type = ? WHERE id = ?"
   ).bind(
-    body.url, 
+    encryptedUrl, 
     body.title || null, 
     body.expires_at || null, 
     passwordHash,
@@ -572,13 +698,12 @@ app.put("/api/links/:id", requireAdmin, async (c) => {
     id
   ).run();
   
-  await writeAuditLog(c.env.DB, "admin", user.id, "edit_link", "link", link.slug, { url: body.url }, ipHash);
-  
+  await writeAuditLog(c.env.DB, "user", user.id, "edit_link", "link", link.slug, { url: "[encrypted]" }, ipHash);
   return c.json({ success: true });
 });
 
-// ADMIN: DELETE /api/links/:id (Soft-delete link)
-app.delete("/api/links/:id", requireAdmin, async (c) => {
+// SCOPED: DELETE /api/links/:id (Soft-delete link, verifies ownership)
+app.delete("/api/links/:id", requireAuthUser, async (c) => {
   const user = c.get("user");
   const id = c.req.param("id");
   const ipHash = await hashIp(clientIp(c));
@@ -586,16 +711,34 @@ app.delete("/api/links/:id", requireAdmin, async (c) => {
   const link = await c.env.DB.prepare("SELECT * FROM links WHERE id = ? LIMIT 1").bind(id).first();
   if (!link) return jsonError(c, "Link not found", 404);
   
-  await c.env.DB.prepare("UPDATE links SET is_active = 0 WHERE id = ?").bind(id).run();
-  await writeAuditLog(c.env.DB, "admin", user.id, "delete_link", "link", link.slug, {}, ipHash);
+  // Verify ownership
+  if (user.role !== "admin" && link.user_id !== user.id) {
+    return jsonError(c, "Forbidden: Access denied", 403);
+  }
   
+  await c.env.DB.prepare("UPDATE links SET is_active = 0 WHERE id = ?").bind(id).run();
+  await writeAuditLog(c.env.DB, "user", user.id, "delete_link", "link", link.slug, {}, ipHash);
   return c.json({ success: true });
 });
 
-// ADMIN: GET /api/stats (Overall dashboard stats)
-app.get("/api/stats", requireAdmin, async (c) => {
-  const totalLinks = await c.env.DB.prepare("SELECT COUNT(*) as count FROM links WHERE is_active = 1").first();
-  const totalClicks = await c.env.DB.prepare("SELECT COUNT(*) as count FROM clicks").first();
+// SCOPED: GET /api/stats (Overall dashboard stats, scoped by user_id)
+app.get("/api/stats", requireAuthUser, async (c) => {
+  const user = c.get("user");
+  let totalLinks, totalClicks, topLinks;
+  
+  if (user.role === "admin") {
+    totalLinks = await c.env.DB.prepare("SELECT COUNT(*) as count FROM links WHERE is_active = 1").first();
+    totalClicks = await c.env.DB.prepare("SELECT COUNT(*) as count FROM clicks").first();
+    topLinks = await c.env.DB.prepare(
+      "SELECT slug, url, clicks FROM links WHERE is_active = 1 ORDER BY clicks DESC LIMIT 5"
+    ).all();
+  } else {
+    totalLinks = await c.env.DB.prepare("SELECT COUNT(*) as count FROM links WHERE user_id = ? AND is_active = 1").bind(user.id).first();
+    totalClicks = await c.env.DB.prepare("SELECT COUNT(*) as count FROM clicks WHERE slug IN (SELECT slug FROM links WHERE user_id = ?)").bind(user.id).first();
+    topLinks = await c.env.DB.prepare(
+      "SELECT slug, url, clicks FROM links WHERE user_id = ? AND is_active = 1 ORDER BY clicks DESC LIMIT 5"
+    ).bind(user.id).all();
+  }
   
   // Clicks last 7 days chart array
   const last7Days = [];
@@ -603,15 +746,20 @@ app.get("/api/stats", requireAdmin, async (c) => {
     const d = new Date();
     d.setDate(d.getDate() - i);
     const dateStr = d.toISOString().split("T")[0];
-    const clickCount = await c.env.DB.prepare(
-      "SELECT COUNT(*) as count FROM clicks WHERE timestamp LIKE ?"
-    ).bind(`${dateStr}%`).first();
+    
+    let clickCount;
+    if (user.role === "admin") {
+      clickCount = await c.env.DB.prepare(
+        "SELECT COUNT(*) as count FROM clicks WHERE timestamp LIKE ?"
+      ).bind(`${dateStr}%`).first();
+    } else {
+      clickCount = await c.env.DB.prepare(
+        "SELECT COUNT(*) as count FROM clicks WHERE slug IN (SELECT slug FROM links WHERE user_id = ?) AND timestamp LIKE ?"
+      ).bind(user.id, `${dateStr}%`).first();
+    }
+    
     last7Days.push({ date: dateStr, clicks: clickCount.count });
   }
-  
-  const topLinks = await c.env.DB.prepare(
-    "SELECT slug, url, clicks FROM links WHERE is_active = 1 ORDER BY clicks DESC LIMIT 5"
-  ).all();
   
   return c.json({
     success: true,
@@ -622,12 +770,19 @@ app.get("/api/stats", requireAdmin, async (c) => {
   });
 });
 
-// ADMIN: GET /api/stats/:slug (Per-link specific stats)
-app.get("/api/stats/:slug", requireAdmin, async (c) => {
+// SCOPED: GET /api/stats/:slug (Per-link specific stats, verifies ownership)
+app.get("/api/stats/:slug", requireAuthUser, async (c) => {
+  const user = c.get("user");
+  const secret = c.env.AUTH_SECRET || c.env.API_KEY || "fallback-secret-64-character-for-session-management";
   const slug = c.req.param("slug");
   
   const link = await c.env.DB.prepare("SELECT * FROM links WHERE slug = ? AND is_active = 1 LIMIT 1").bind(slug).first();
   if (!link) return jsonError(c, "Link not found", 404);
+  
+  // Verify ownership
+  if (user.role !== "admin" && link.user_id !== user.id) {
+    return jsonError(c, "Forbidden: Access denied", 403);
+  }
   
   const clicksByCountry = await c.env.DB.prepare(
     "SELECT country, COUNT(*) as count FROM clicks WHERE slug = ? GROUP BY country ORDER BY count DESC LIMIT 10"
@@ -640,7 +795,7 @@ app.get("/api/stats/:slug", requireAdmin, async (c) => {
   return c.json({
     success: true,
     slug,
-    url: link.url,
+    url: await decryptUrl(link.url, secret),
     title: link.title,
     clicks: link.clicks,
     clicks_by_country: clicksByCountry.results,
@@ -648,7 +803,7 @@ app.get("/api/stats/:slug", requireAdmin, async (c) => {
   });
 });
 
-// ADMIN: IP Block endpoints
+// ADMIN: GET /api/admin/blocked-ips
 app.get("/api/admin/blocked-ips", requireAdmin, async (c) => {
   const list = await c.env.DB.prepare("SELECT * FROM blocked_ips ORDER BY created_at DESC").all();
   return c.json({ success: true, data: list.results });
@@ -675,7 +830,6 @@ app.delete("/api/admin/blocked-ips/:id", requireAdmin, async (c) => {
   const ipHash = await hashIp(clientIp(c));
   
   const block = await c.env.DB.prepare("SELECT * FROM blocked_ips WHERE id = ? LIMIT 1").bind(id).first();
-  
   await c.env.DB.prepare("DELETE FROM blocked_ips WHERE id = ?").bind(id).run();
   if (block) {
     await writeAuditLog(c.env.DB, "admin", user.id, "unblock_ip", "ip", block.ip_hash, {}, ipHash);
@@ -701,12 +855,13 @@ app.get("/api/qr/:slug", async (c) => {
   return c.redirect(qrUrl);
 });
 
-// PUBLIC REDIRECT: GET /:slug
+// PUBLIC REDIRECT: GET /:slug (Decrypts destination URL at runtime)
 app.get("/:slug", async (c) => {
   const slug = c.req.param("slug");
+  const secret = c.env.AUTH_SECRET || c.env.API_KEY || "captcha-signing-fallback-salt";
   
   // Skip routing reserved words
-  const reserved = ["api", "health", "favicon.ico"];
+  const reserved = ["api", "health", "favicon.ico", "admin"];
   if (reserved.includes(slug)) return c.notFound();
   
   const link = await c.env.DB.prepare("SELECT * FROM links WHERE slug = ? AND is_active = 1 LIMIT 1").bind(slug).first();
@@ -775,7 +930,9 @@ app.get("/:slug", async (c) => {
     }
   })());
   
-  return c.redirect(link.url, link.redirect_type || 302);
+  // Decrypt URL at runtime
+  const decryptedUrl = await decryptUrl(link.url, secret);
+  return c.redirect(decryptedUrl, link.redirect_type || 302);
 });
 
 export default app;
