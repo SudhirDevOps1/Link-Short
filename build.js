@@ -51,7 +51,7 @@ try {
 
     // 4. Apply migrations to the database
     console.log("Applying database migrations...");
-    execSync(`npx wrangler d1 migrations apply ${DB_NAME} --remote --yes`, { stdio: 'inherit' });
+    execSync(`npx wrangler d1 migrations apply ${DB_NAME} --remote`, { stdio: 'inherit' });
   } else {
     throw new Error("Could not find or create D1 database ID.");
   }
